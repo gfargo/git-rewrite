@@ -21,17 +21,12 @@ FIELD_ATTR: dict[str, str] = {
 
 
 def _re_flags_code(flags: int) -> str:
-    """Return a re.compile flags argument string, e.g. '| re.IGNORECASE'."""
-    parts = []
-    if flags & re.IGNORECASE:
-        parts.append("re.IGNORECASE")
-    if flags & re.MULTILINE:
-        parts.append("re.MULTILINE")
-    if flags & re.DOTALL:
-        parts.append("re.DOTALL")
-    if not parts:
-        return "0"
-    return " | ".join(parts)
+    """Return a re.compile flags argument string as a literal integer.
+
+    Embedding the integer value avoids any dependency on how ``re`` is
+    imported inside the generated code snippet.
+    """
+    return str(int(flags))
 
 
 def strip(pattern: str, flags: int, field: str) -> str:

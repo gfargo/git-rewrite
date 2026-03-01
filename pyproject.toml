@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "git-rewrite"
+version = "0.1.0"
+description = "Bulk-rewrite any part of git commit history: messages, authors, emails, dates, and more"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+
+[project.scripts]
+git-rewrite = "git_rewrite.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["git_rewrite*"]

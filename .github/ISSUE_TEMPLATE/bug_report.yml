@@ -1,0 +1,53 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in git-rewrite
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the form below.
+  
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: Tell us what you see!
+    validations:
+      required: true
+  
+  - type: input
+    id: command
+    attributes:
+      label: Command run
+      description: The exact `git-rewrite ...` command you ran.
+      placeholder: "git-rewrite ..."
+    validations:
+      required: true
+  
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What you expected to happen.
+    validations:
+      required: true
+  
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour / error output
+      description: What actually happened. Include any error messages or stack traces.
+      render: shell
+    validations:
+      required: true
+  
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: "OS, Python version, git-filter-repo installed (y/n)"
+      placeholder: "macOS 14.0, Python 3.11, git-filter-repo: yes"
+    validations:
+      required: true

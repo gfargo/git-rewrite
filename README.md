@@ -2,6 +2,18 @@
 
 Bulk-rewrite any part of git commit history: messages, author names, emails, and more.
 
+## Why
+
+`git-filter-repo` is powerful but low-level — you write raw Python callbacks and run them blind. `git filter-branch` is worse. Neither tells you what they'll touch before they touch it, neither asks for confirmation, and neither reminds you to force-push afterwards.
+
+`git-rewrite` wraps both with a human-friendly CLI:
+
+- **preview first** — see exactly which commits match before changing anything
+- **dry-run** — validate the full command without rewriting a single commit
+- **safe pattern embedding** — patterns are repr-encoded so backslashes and quotes can't break the generated code
+- **callback validation** — custom scripts are syntax-checked and inspected for `process_commit` before history is touched
+- **escape hatch** — when regex isn't enough, drop down to a plain Python file and get full access to every commit field
+
 Uses [git-filter-repo](https://github.com/newren/git-filter-repo) when available, falling back to `git filter-branch`.
 
 ## Installation

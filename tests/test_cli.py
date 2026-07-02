@@ -2,13 +2,10 @@
 
 import subprocess
 import sys
-import textwrap
-from pathlib import Path
 
 import pytest
 
-from git_rewrite.cli import build_parser, _compile_pattern, _re_flags
-
+from git_rewrite.cli import _compile_pattern, _re_flags, build_parser
 
 # ---------------------------------------------------------------------------
 # Parser / argument parsing

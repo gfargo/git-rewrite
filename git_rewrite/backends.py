@@ -2,12 +2,11 @@
 backends.py — filter-repo / filter-branch backend abstraction for git-rewrite.
 """
 
+import atexit
 import shutil
 import subprocess
 import sys
 import tempfile
-import os
-import atexit
 from pathlib import Path
 
 from . import ops

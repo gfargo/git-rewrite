@@ -6,7 +6,6 @@ will exec() for each commit object.  Patterns are embedded via repr() so
 backslashes, quotes, and angle brackets cannot break the generated code.
 """
 
-import re
 import sys
 from pathlib import Path
 

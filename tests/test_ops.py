@@ -2,14 +2,12 @@
 
 import re
 import sys
-import textwrap
 import tempfile
-from pathlib import Path
+import textwrap
 
 import pytest
 
 from git_rewrite import ops
-
 
 # ---------------------------------------------------------------------------
 # Helpers

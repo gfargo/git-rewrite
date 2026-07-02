@@ -289,7 +289,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     callback = ops.from_file(args.script)
 
     print()
-    print("  action  : run custom script")
+    print(f"  action  : run custom script")
     print(f"  script  : {args.script}")
     print(f"  refs    : {', '.join(args.refs) if args.refs else 'all'}")
     print()
@@ -347,9 +347,10 @@ def cmd_preview(args: argparse.Namespace) -> None:
         if len(sha) < 40:
             continue
         body_lines = lines[1:]
+        body = "\n".join(body_lines)
 
         # Find matching lines.
-        matching_lines = [line for line in body_lines if pat.search(line)]
+        matching_lines = [l for l in body_lines if pat.search(l)]
         if not matching_lines:
             continue
 

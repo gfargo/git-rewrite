@@ -5,7 +5,8 @@ import sys
 
 import pytest
 
-from git_rewrite.cli import _compile_pattern, _re_flags, build_parser
+from git_rewrite.cli import build_parser, _compile_pattern, _re_flags
+
 
 # ---------------------------------------------------------------------------
 # Parser / argument parsing

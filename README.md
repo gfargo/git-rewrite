@@ -53,6 +53,10 @@ git-rewrite strip "Co-Authored-By: Claude.*<noreply@anthropic\.com>"
 git-rewrite strip --field author-email "old@example\.com"
 ```
 
+> **Note:** Using `strip` on a date field (`--field author-date` or `--field committer-date`) zeroes the
+> field to an empty byte string, producing an invalid date. Use `replace` instead to rewrite specific
+> parts of the date value while keeping it valid.
+
 #### `replace` — substitute a pattern with a replacement
 
 ```bash

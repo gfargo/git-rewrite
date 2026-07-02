@@ -77,6 +77,29 @@ git-rewrite run my_callback.py --refs main feature/branch
 | `--field FIELD` | Field to target: `message`, `author-name`, `author-email`, `committer-name`, `committer-email` |
 | `--case-sensitive` | Disable case-insensitive matching |
 
+### Scoping flags (`strip`, `replace`, `preview`)
+
+These flags narrow which commits are previewed and counted. DATE accepts any format `git log` understands (`2024-01-01`, `6 months ago`, `yesterday`, etc.).
+
+> **Note:** Scoping flags filter which commits are *shown/counted*, not which commits the rewrite callback runs against. The actual rewrite still processes every commit in the given refs.
+
+| Flag | Description |
+|------|-------------|
+| `--since DATE` | Only consider commits more recent than DATE |
+| `--until DATE` | Only consider commits older than DATE |
+| `--author PATTERN` | Only consider commits whose author name/email matches PATTERN (regex) |
+
+```bash
+# Preview only Claude co-authorship lines from the last 6 months
+git-rewrite preview "Co-Authored-By: Claude" --since "6 months ago"
+
+# Count matches by a specific contributor
+git-rewrite strip --dry-run "Co-Authored-By: Claude" --author "alice@example.com"
+
+# Scope by both date range and author
+git-rewrite replace "OldOrg" "NewOrg" --since 2024-01-01 --until 2025-01-01 --author "dev@oldorg.com"
+```
+
 ## Custom callbacks (`run`)
 
 Create a `.py` file defining `process_commit`:

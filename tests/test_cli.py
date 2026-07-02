@@ -2,13 +2,10 @@
 
 import subprocess
 import sys
-import textwrap
-from pathlib import Path
 
 import pytest
 
-from git_rewrite.cli import build_parser, _compile_pattern, _re_flags
-
+from git_rewrite.cli import _compile_pattern, _re_flags, _scope_args, build_parser
 
 # ---------------------------------------------------------------------------
 # Parser / argument parsing
@@ -67,6 +64,104 @@ class TestParser:
     def test_invalid_field_exits(self):
         with pytest.raises(SystemExit):
             self.parser.parse_args(["strip", "pat", "--field", "not-a-field"])
+
+    def test_strip_scope_defaults_none(self):
+        args = self.parser.parse_args(["strip", "pat"])
+        assert args.since is None
+        assert args.until is None
+        assert args.author is None
+
+    def test_replace_scope_defaults_none(self):
+        args = self.parser.parse_args(["replace", "old", "new"])
+        assert args.since is None
+        assert args.until is None
+        assert args.author is None
+
+    def test_preview_scope_defaults_none(self):
+        args = self.parser.parse_args(["preview", "pat"])
+        assert args.since is None
+        assert args.until is None
+        assert args.author is None
+
+    def test_strip_scope_flags_parsed(self):
+        args = self.parser.parse_args([
+            "strip", "pat",
+            "--since", "2024-01-01",
+            "--until", "2025-01-01",
+            "--author", "alice@example.com",
+        ])
+        assert args.since == "2024-01-01"
+        assert args.until == "2025-01-01"
+        assert args.author == "alice@example.com"
+
+    def test_replace_scope_flags_parsed(self):
+        args = self.parser.parse_args([
+            "replace", "old", "new",
+            "--since", "6 months ago",
+            "--author", "bob",
+        ])
+        assert args.since == "6 months ago"
+        assert args.until is None
+        assert args.author == "bob"
+
+    def test_preview_scope_flags_parsed(self):
+        args = self.parser.parse_args([
+            "preview", "pat",
+            "--since", "yesterday",
+            "--until", "today",
+        ])
+        assert args.since == "yesterday"
+        assert args.until == "today"
+
+    def test_strip_refs_and_scope_coexist(self):
+        args = self.parser.parse_args([
+            "strip", "pat",
+            "--refs", "main",
+            "--since", "2024-01-01",
+        ])
+        assert args.refs == ["main"]
+        assert args.since == "2024-01-01"
+
+
+# ---------------------------------------------------------------------------
+# _scope_args
+# ---------------------------------------------------------------------------
+
+class TestScopeArgs:
+    def _make_args(self, since=None, until=None, author=None):
+        parser = build_parser()
+        cmd = ["strip", "pat"]
+        if since is not None:
+            cmd += ["--since", since]
+        if until is not None:
+            cmd += ["--until", until]
+        if author is not None:
+            cmd += ["--author", author]
+        return parser.parse_args(cmd)
+
+    def test_all_none_returns_empty(self):
+        args = self._make_args()
+        assert _scope_args(args) == []
+
+    def test_since_only(self):
+        args = self._make_args(since="2024-01-01")
+        assert _scope_args(args) == ["--since", "2024-01-01"]
+
+    def test_until_only(self):
+        args = self._make_args(until="2025-01-01")
+        assert _scope_args(args) == ["--until", "2025-01-01"]
+
+    def test_author_only(self):
+        args = self._make_args(author="alice")
+        assert _scope_args(args) == ["--author", "alice"]
+
+    def test_all_three(self):
+        args = self._make_args(since="2024-01-01", until="2025-01-01", author="alice")
+        assert _scope_args(args) == [
+            "--since", "2024-01-01",
+            "--until", "2025-01-01",
+            "--author", "alice",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -202,3 +297,61 @@ class TestPreviewIntegration:
         )
         assert result.returncode == 0
         assert "No matching commits found" in result.stdout
+
+    def test_preview_author_filter_matches(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--author", "Test"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "2 commit(s) shown" in result.stdout
+
+    def test_preview_author_filter_no_matches(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--author", "nobody-xyz"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "No matching commits found" in result.stdout
+
+    def test_preview_since_future_no_matches(self, fixture_repo):
+        # All fixture commits are dated 2024-01-01; since 2025 yields nothing.
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--since", "2025-01-01"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "No matching commits found" in result.stdout
+
+    def test_preview_until_past_no_matches(self, fixture_repo):
+        # All fixture commits are dated 2024-01-01; until 2023 yields nothing.
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--until", "2023-12-31"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "No matching commits found" in result.stdout
+
+    def test_preview_scope_shown_in_header(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--since", "2024-01-01", "--author", "Test"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "since   : 2024-01-01" in result.stdout
+        assert "author  : Test" in result.stdout

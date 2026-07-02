@@ -13,8 +13,7 @@ import re
 import subprocess
 import sys
 
-from . import ops
-from . import backends
+from . import backends, ops
 from .__init__ import __version__
 
 # Fields available for strip/replace
@@ -39,14 +38,19 @@ def _re_flags(case_sensitive: bool) -> int:
     return 0 if case_sensitive else re.IGNORECASE
 
 
-def _count_matching_commits(pattern: re.Pattern, field: str, refs: list[str]) -> tuple[int, list[tuple[str, str]]]:
+def _count_matching_commits(
+    pattern: re.Pattern,
+    field: str,
+    refs: list[str],
+    scope: list[str] = [],
+) -> tuple[int, list[tuple[str, str]]]:
     """
     Return (total_commits, matching_commits) where each matching entry is
     (sha12, subject).
     """
     ref_args = refs if refs else ["--all"]
     result = subprocess.run(
-        ["git", "log", *ref_args, "--format=%H%n%B%x00"],
+        ["git", "log", *ref_args, *scope, "--format=%H%n%B%x00"],
         capture_output=True,
         text=True,
     )
@@ -112,6 +116,9 @@ def _print_summary(
     refs: list[str],
     matching_count: int,
     total_count: int,
+    since: str | None = None,
+    until: str | None = None,
+    author: str | None = None,
 ) -> None:
     print()
     print(f"  action  : {action}")
@@ -121,6 +128,12 @@ def _print_summary(
     print(f"  field   : {field}")
     print(f"  case    : {'sensitive' if case_sensitive else 'insensitive'}")
     print(f"  refs    : {', '.join(refs) if refs else 'all'}")
+    if since is not None:
+        print(f"  since   : {since}")
+    if until is not None:
+        print(f"  until   : {until}")
+    if author is not None:
+        print(f"  author  : {author}")
     print(f"  matches : {matching_count} / {total_count} commits")
     print()
 
@@ -195,6 +208,39 @@ def _add_case_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_scope_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--since",
+        metavar="DATE",
+        default=None,
+        help="Only consider commits more recent than DATE (passed to git log --since).",
+    )
+    parser.add_argument(
+        "--until",
+        metavar="DATE",
+        default=None,
+        help="Only consider commits older than DATE (passed to git log --until).",
+    )
+    parser.add_argument(
+        "--author",
+        metavar="PATTERN",
+        default=None,
+        help="Only consider commits whose author name/email matches PATTERN (passed to git log --author).",
+    )
+
+
+def _scope_args(args: argparse.Namespace) -> list[str]:
+    """Build git-log scope arguments from --since / --until / --author flags."""
+    result = []
+    if getattr(args, "since", None):
+        result += ["--since", args.since]
+    if getattr(args, "until", None):
+        result += ["--until", args.until]
+    if getattr(args, "author", None):
+        result += ["--author", args.author]
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -204,8 +250,9 @@ def cmd_strip(args: argparse.Namespace) -> None:
     pat = _compile_pattern(args.pattern, args.case_sensitive)
     flags = _re_flags(args.case_sensitive)
     requires_filter_repo = args.field != "message"
+    scope = _scope_args(args)
 
-    total, matching = _count_matching_commits(pat, args.field, args.refs)
+    total, matching = _count_matching_commits(pat, args.field, args.refs, scope)
     _print_summary(
         action="strip",
         pattern=args.pattern,
@@ -214,6 +261,9 @@ def cmd_strip(args: argparse.Namespace) -> None:
         refs=args.refs,
         matching_count=len(matching),
         total_count=total,
+        since=args.since,
+        until=args.until,
+        author=args.author,
     )
 
     if not matching:
@@ -241,8 +291,9 @@ def cmd_replace(args: argparse.Namespace) -> None:
     pat = _compile_pattern(args.pattern, args.case_sensitive)
     flags = _re_flags(args.case_sensitive)
     requires_filter_repo = args.field != "message"
+    scope = _scope_args(args)
 
-    total, matching = _count_matching_commits(pat, args.field, args.refs)
+    total, matching = _count_matching_commits(pat, args.field, args.refs, scope)
     _print_summary(
         action="replace",
         pattern=args.pattern,
@@ -252,6 +303,9 @@ def cmd_replace(args: argparse.Namespace) -> None:
         refs=args.refs,
         matching_count=len(matching),
         total_count=total,
+        since=args.since,
+        until=args.until,
+        author=args.author,
     )
 
     if not matching:
@@ -281,7 +335,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     callback = ops.from_file(args.script)
 
     print()
-    print(f"  action  : run custom script")
+    print("  action  : run custom script")
     print(f"  script  : {args.script}")
     print(f"  refs    : {', '.join(args.refs) if args.refs else 'all'}")
     print()
@@ -304,11 +358,12 @@ def cmd_run(args: argparse.Namespace) -> None:
 def cmd_preview(args: argparse.Namespace) -> None:
     backends.check_git_repo()
     pat = _compile_pattern(args.pattern, args.case_sensitive)
+    scope = _scope_args(args)
 
     # Collect commits with their full messages for preview.
     ref_args = args.refs if args.refs else ["--all"]
     result = subprocess.run(
-        ["git", "log", *ref_args, "--format=%H%n%B%x00"],
+        ["git", "log", *ref_args, *scope, "--format=%H%n%B%x00"],
         capture_output=True,
         text=True,
     )
@@ -323,6 +378,12 @@ def cmd_preview(args: argparse.Namespace) -> None:
     print(f"  pattern : {args.pattern}")
     print(f"  case    : {'sensitive' if args.case_sensitive else 'insensitive'}")
     print(f"  refs    : {', '.join(args.refs) if args.refs else 'all'}")
+    if args.since is not None:
+        print(f"  since   : {args.since}")
+    if args.until is not None:
+        print(f"  until   : {args.until}")
+    if args.author is not None:
+        print(f"  author  : {args.author}")
     print(f"  limit   : {limit}")
     print()
 
@@ -339,10 +400,9 @@ def cmd_preview(args: argparse.Namespace) -> None:
         if len(sha) < 40:
             continue
         body_lines = lines[1:]
-        body = "\n".join(body_lines)
 
         # Find matching lines.
-        matching_lines = [l for l in body_lines if pat.search(l)]
+        matching_lines = [line for line in body_lines if pat.search(line)]
         if not matching_lines:
             continue
 
@@ -391,6 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_field_flag(p_strip)
     _add_case_flag(p_strip)
     _add_common_flags(p_strip)
+    _add_scope_flags(p_strip)
     p_strip.set_defaults(func=cmd_strip)
 
     # -- replace --------------------------------------------------------------
@@ -407,6 +468,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_field_flag(p_replace)
     _add_case_flag(p_replace)
     _add_common_flags(p_replace)
+    _add_scope_flags(p_replace)
     p_replace.set_defaults(func=cmd_replace)
 
     # -- run ------------------------------------------------------------------
@@ -449,6 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Limit search to specific refs (default: all refs).",
     )
+    _add_scope_flags(p_preview)
     p_preview.set_defaults(func=cmd_preview)
 
     return parser

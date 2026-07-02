@@ -1,5 +1,7 @@
 """Tests for git_rewrite/cli.py — argument parsing and preview logic."""
 
+import json
+import os
 import subprocess
 import sys
 
@@ -121,6 +123,38 @@ class TestParser:
         ])
         assert args.refs == ["main"]
         assert args.since == "2024-01-01"
+
+    def test_preview_format_default_text(self):
+        args = self.parser.parse_args(["preview", "pat"])
+        assert args.format == "text"
+
+    def test_preview_format_json(self):
+        args = self.parser.parse_args(["preview", "pat", "--format", "json"])
+        assert args.format == "json"
+
+    def test_preview_format_invalid_exits(self):
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["preview", "pat", "--format", "xml"])
+
+    def test_preview_no_color_flag(self):
+        args = self.parser.parse_args(["preview", "pat", "--no-color"])
+        assert args.no_color is True
+
+    def test_strip_preview_flag(self):
+        args = self.parser.parse_args(["strip", "pat", "--preview"])
+        assert args.preview is True
+
+    def test_strip_no_color_flag(self):
+        args = self.parser.parse_args(["strip", "pat", "--no-color"])
+        assert args.no_color is True
+
+    def test_replace_preview_flag(self):
+        args = self.parser.parse_args(["replace", "old", "new", "--preview"])
+        assert args.preview is True
+
+    def test_replace_no_color_flag(self):
+        args = self.parser.parse_args(["replace", "old", "new", "--no-color"])
+        assert args.no_color is True
 
 
 # ---------------------------------------------------------------------------
@@ -355,3 +389,144 @@ class TestPreviewIntegration:
         assert result.returncode == 0
         assert "since   : 2024-01-01" in result.stdout
         assert "author  : Test" in result.stdout
+
+
+class TestPreviewFormatJson:
+    def test_json_valid_ndjson(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By: Claude",
+             "--format", "json"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+        assert len(lines) == 2
+        for line in lines:
+            obj = json.loads(line)
+            assert "sha" in obj
+            assert "subject" in obj
+            assert "matched_lines" in obj
+            assert len(obj["sha"]) == 12
+            assert any("Co-Authored-By: Claude" in ml for ml in obj["matched_lines"])
+
+    def test_json_no_header_text(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--format", "json"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        for line in result.stdout.splitlines():
+            if line.strip():
+                json.loads(line)  # raises if not valid JSON
+
+    def test_json_no_matches_empty_stdout(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "no-such-pattern-xyz",
+             "--format", "json"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_json_limit_applies(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--format", "json", "--limit", "1"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+        assert len(lines) == 1
+
+    def test_format_text_unchanged(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By: Claude",
+             "--format", "text"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "2 commit(s) shown" in result.stdout
+
+
+class TestStripPreview:
+    def test_strip_preview_shows_removed_lines(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Co-Authored-By: Claude" in result.stdout
+        assert "- " in result.stdout
+
+    def test_strip_preview_makes_no_changes(self, fixture_repo):
+        before = subprocess.run(
+            ["git", "log", "--format=%H %s"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        ).stdout
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        after = subprocess.run(
+            ["git", "log", "--format=%H %s"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert before == after
+
+    def test_strip_preview_no_color_flag(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview", "--no-color"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "\x1b[" not in result.stdout
+
+    def test_strip_preview_no_color_env(self, fixture_repo):
+        env = dict(os.environ)
+        env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0
+        assert "\x1b[" not in result.stdout
+
+    def test_strip_preview_shows_count(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview", "--no-color"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "2 commit(s) would be modified" in result.stdout

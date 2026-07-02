@@ -6,6 +6,7 @@ will exec() for each commit object.  Patterns are embedded via repr() so
 backslashes, quotes, and angle brackets cannot break the generated code.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -128,6 +129,24 @@ def from_file(path: str) -> str:
         )
 
     return source + "\nprocess_commit(commit)\n"
+
+
+def apply_strip_message(message: str, pat: re.Pattern) -> str:
+    """Apply strip to a decoded message string (for diff preview only — keep in sync with strip())."""
+    lines = message.splitlines(keepends=True)
+    lines = [ln for ln in lines if not pat.search(ln.rstrip("\n"))]
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    return "".join(lines)
+
+
+def apply_replace_message(message: str, pat: re.Pattern, replacement: str) -> str:
+    """Apply replace to a decoded message string (for diff preview only — keep in sync with replace())."""
+    lines = message.splitlines(keepends=True)
+    lines = [pat.sub(replacement, ln) for ln in lines]
+    return "".join(lines)
 
 
 def wrap_for_filter_branch(callback_code: str) -> str:

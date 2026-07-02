@@ -79,6 +79,24 @@ class TestStrip:
         run_callback(code, c)
         assert c.author_email == b"keep@example.com"
 
+    def test_zeros_author_date_on_match(self):
+        code = ops.strip(r"[-+]\d{4}$", flags=0, field="author-date")
+        c = FakeCommit(author_date=b"1700000000 -0700")
+        run_callback(code, c)
+        assert c.author_date == b""
+
+    def test_leaves_author_date_on_no_match(self):
+        code = ops.strip(r"\+9999$", flags=0, field="author-date")
+        c = FakeCommit(author_date=b"1700000000 +0000")
+        run_callback(code, c)
+        assert c.author_date == b"1700000000 +0000"
+
+    def test_zeros_committer_date_on_match(self):
+        code = ops.strip(r"[-+]\d{4}$", flags=0, field="committer-date")
+        c = FakeCommit(committer_date=b"1700000000 +0530")
+        run_callback(code, c)
+        assert c.committer_date == b""
+
     def test_noop_on_empty_message(self):
         code = ops.strip("anything", flags=0, field="message")
         c = FakeCommit(message=b"")
@@ -109,6 +127,18 @@ class TestReplace:
         c = FakeCommit(author_name=b"Old Name")
         run_callback(code, c)
         assert c.author_name == b"New Name"
+
+    def test_replaces_author_date_timezone(self):
+        code = ops.replace(r"[-+]\d{4}$", "+0000", flags=0, field="author-date")
+        c = FakeCommit(author_date=b"1700000000 -0700")
+        run_callback(code, c)
+        assert c.author_date == b"1700000000 +0000"
+
+    def test_replaces_committer_date_timezone(self):
+        code = ops.replace(r"[-+]\d{4}$", "+0000", flags=0, field="committer-date")
+        c = FakeCommit(committer_date=b"1700000000 +0530")
+        run_callback(code, c)
+        assert c.committer_date == b"1700000000 +0000"
 
     def test_noop_when_no_match(self):
         code = ops.replace("not-there", "replacement", flags=0, field="message")

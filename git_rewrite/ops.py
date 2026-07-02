@@ -17,6 +17,8 @@ FIELD_ATTR: dict[str, str] = {
     "author-email": "commit.author_email",
     "committer-name": "commit.committer_name",
     "committer-email": "commit.committer_email",
+    "author-date": "commit.author_date",
+    "committer-date": "commit.committer_date",
 }
 
 

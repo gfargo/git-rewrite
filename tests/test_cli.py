@@ -25,6 +25,11 @@ class TestParser:
         assert args.dry_run is False
         assert args.yes is False
         assert args.refs == []
+        assert args.invert is False
+
+    def test_strip_invert_flag(self):
+        args = self.parser.parse_args(["strip", "my-pattern", "--invert"])
+        assert args.invert is True
 
     def test_replace_positionals(self):
         args = self.parser.parse_args(["replace", "old", "new"])
@@ -530,3 +535,44 @@ class TestStripPreview:
         )
         assert result.returncode == 0
         assert "2 commit(s) would be modified" in result.stdout
+
+
+class TestStripInvert:
+    def test_invert_strips_non_trailer_lines(self, fixture_repo):
+        # Summary is printed before the rewrite backend runs, so this is a
+        # valid check even in environments without git-filter-repo installed.
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By",
+             "--invert", "--dry-run", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert "invert  : yes" in result.stdout
+        # Every commit's subject line fails to match "Co-Authored-By", so under
+        # --invert all 3 commits would have at least one line stripped.
+        assert "3 / 3 commits" in result.stdout
+
+    def test_invert_preview_shows_inverted_diff(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--invert", "--preview", "--no-color"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        # Non-matching lines (e.g. the subject) are removed under --invert.
+        assert "- Add feature" in result.stdout or "- Fix bug" in result.stdout
+        # The matching trailer line is kept, so it shouldn't show as added.
+        assert "+ Co-Authored-By: Claude" not in result.stdout
+
+    def test_invert_summary_without_invert_flag(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By",
+             "--dry-run", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert "invert" not in result.stdout

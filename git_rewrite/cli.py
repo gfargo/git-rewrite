@@ -50,6 +50,7 @@ def _count_matching_commits(
     field: str,
     refs: list[str],
     scope: list[str] = [],
+    invert: bool = False,
 ) -> tuple[int, list[tuple[str, str, str]]]:
     """
     Return (total_commits, matching_commits) where each matching entry is
@@ -82,14 +83,23 @@ def _count_matching_commits(
         total += 1
 
         if field == "message":
-            target = body
+            if invert:
+                # Under --invert, a commit is "matching" (i.e. would be modified)
+                # if at least one line does NOT match the pattern and would be
+                # stripped. Checked per-line to mirror ops.strip()'s behavior.
+                found = any(not pattern.search(ln) for ln in body.splitlines())
+            else:
+                found = bool(pattern.search(body))
         else:
             # For non-message fields we can't easily inspect via git log text output;
             # count as "unknown" — full rewrite will still filter correctly.
             # Use git log pretty format for author/committer info.
             target = _get_field_value(sha, field)
+            found = bool(pattern.search(target))
+            if invert:
+                found = not found
 
-        if pattern.search(target):
+        if found:
             subject = body.splitlines()[0] if body.strip() else "(empty message)"
             matching.append((sha[:12], subject, body))
 
@@ -126,6 +136,7 @@ def _print_summary(
     since: str | None = None,
     until: str | None = None,
     author: str | None = None,
+    invert: bool = False,
 ) -> None:
     print()
     print(f"  action  : {action}")
@@ -141,6 +152,8 @@ def _print_summary(
         print(f"  until   : {until}")
     if author is not None:
         print(f"  author  : {author}")
+    if invert:
+        print("  invert  : yes")
     print(f"  matches : {matching_count} / {total_count} commits")
     print()
 
@@ -335,14 +348,18 @@ def cmd_strip(args: argparse.Namespace) -> None:
     requires_filter_repo = args.field != "message"
     scope = _scope_args(args)
 
-    total, matching = _count_matching_commits(pat, args.field, args.refs, scope)
+    total, matching = _count_matching_commits(pat, args.field, args.refs, scope, invert=args.invert)
 
     if args.preview:
         if args.field != "message":
             print("Note: --preview diff is only supported for --field message.")
             print(f"  {len(matching)} commit(s) matched. No changes made.")
             return
-        _render_diff_preview(matching, lambda body: ops.apply_strip_message(body, pat), _use_color(args))
+        _render_diff_preview(
+            matching,
+            lambda body: ops.apply_strip_message(body, pat, invert=args.invert),
+            _use_color(args),
+        )
         return
 
     _print_summary(
@@ -356,6 +373,7 @@ def cmd_strip(args: argparse.Namespace) -> None:
         since=args.since,
         until=args.until,
         author=args.author,
+        invert=args.invert,
     )
 
     if not matching:
@@ -366,7 +384,7 @@ def cmd_strip(args: argparse.Namespace) -> None:
         print("Aborted.")
         return
 
-    callback = ops.strip(args.pattern, flags, args.field)
+    callback = ops.strip(args.pattern, flags, args.field, invert=args.invert)
     backends.rewrite(
         callback,
         dry_run=args.dry_run,
@@ -545,6 +563,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_case_flag(p_strip)
     _add_common_flags(p_strip)
     _add_scope_flags(p_strip)
+    p_strip.add_argument(
+        "--invert",
+        action="store_true",
+        help="Keep only lines (or field values) matching PATTERN; strip everything else.",
+    )
     p_strip.add_argument(
         "--preview",
         action="store_true",

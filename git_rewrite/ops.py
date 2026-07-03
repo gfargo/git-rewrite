@@ -6,6 +6,7 @@ will exec() for each commit object.  Patterns are embedded via repr() so
 backslashes, quotes, and angle brackets cannot break the generated code.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -30,23 +31,27 @@ def _re_flags_code(flags: int) -> str:
     return str(int(flags))
 
 
-def strip(pattern: str, flags: int, field: str) -> str:
+def strip(pattern: str, flags: int, field: str, invert: bool = False) -> str:
     """
     Return callback code that removes lines (or zeroes a field) matching *pattern*.
 
     For the message field: filters line-by-line and cleans up trailing blanks.
     For other fields: zeros the attribute if the pattern matches anywhere.
+
+    When *invert* is True, the predicate is flipped: only lines (or field
+    values) that match *pattern* are kept, and everything else is removed.
     """
     attr = FIELD_ATTR[field]
     pat_repr = repr(pattern.encode())
     flags_code = _re_flags_code(flags)
 
     if field == "message":
+        keep_cond = "_pat.search(_l.rstrip(b'\\n'))" if invert else "not _pat.search(_l.rstrip(b'\\n'))"
         return f"""\
 import re as _re
 _pat = _re.compile({pat_repr}, {flags_code})
 _lines = {attr}.splitlines(keepends=True)
-_lines = [_l for _l in _lines if not _pat.search(_l.rstrip(b'\\n'))]
+_lines = [_l for _l in _lines if {keep_cond}]
 # Remove trailing blank lines
 while _lines and _lines[-1].strip() == b'':
     _lines.pop()
@@ -55,10 +60,11 @@ if _lines and not _lines[-1].endswith(b'\\n'):
 {attr} = b''.join(_lines)
 """
     else:
+        zero_cond = f"not _pat.search({attr})" if invert else f"_pat.search({attr})"
         return f"""\
 import re as _re
 _pat = _re.compile({pat_repr}, {flags_code})
-if _pat.search({attr}):
+if {zero_cond}:
     {attr} = b''
 """
 
@@ -130,6 +136,27 @@ def from_file(path: str) -> str:
         )
 
     return source + "\nprocess_commit(commit)\n"
+
+
+def apply_strip_message(message: str, pat: re.Pattern, invert: bool = False) -> str:
+    """Apply strip to a decoded message string (for diff preview only — keep in sync with strip())."""
+    lines = message.splitlines(keepends=True)
+    if invert:
+        lines = [ln for ln in lines if pat.search(ln.rstrip("\n"))]
+    else:
+        lines = [ln for ln in lines if not pat.search(ln.rstrip("\n"))]
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    return "".join(lines)
+
+
+def apply_replace_message(message: str, pat: re.Pattern, replacement: str) -> str:
+    """Apply replace to a decoded message string (for diff preview only — keep in sync with replace())."""
+    lines = message.splitlines(keepends=True)
+    lines = [pat.sub(replacement, ln) for ln in lines]
+    return "".join(lines)
 
 
 def wrap_for_filter_branch(callback_code: str) -> str:

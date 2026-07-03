@@ -1,12 +1,19 @@
 """Tests for git_rewrite/cli.py — argument parsing and preview logic."""
 
+import json
+import os
 import subprocess
 import sys
 
 import pytest
 
-from git_rewrite.cli import build_parser, _compile_pattern, _re_flags
-
+from git_rewrite.cli import (
+    _compile_pattern,
+    _re_flags,
+    _refs_completer,
+    _scope_args,
+    build_parser,
+)
 
 # ---------------------------------------------------------------------------
 # Parser / argument parsing
@@ -24,6 +31,11 @@ class TestParser:
         assert args.dry_run is False
         assert args.yes is False
         assert args.refs == []
+        assert args.invert is False
+
+    def test_strip_invert_flag(self):
+        args = self.parser.parse_args(["strip", "my-pattern", "--invert"])
+        assert args.invert is True
 
     def test_replace_positionals(self):
         args = self.parser.parse_args(["replace", "old", "new"])
@@ -83,6 +95,135 @@ class TestParser:
     def test_replace_with_committer_date_field(self):
         args = self.parser.parse_args(["replace", r"[-+]\d{4}$", "+0000", "--field", "committer-date"])
         assert args.field == "committer-date"
+    def test_strip_scope_defaults_none(self):
+        args = self.parser.parse_args(["strip", "pat"])
+        assert args.since is None
+        assert args.until is None
+        assert args.author is None
+
+    def test_replace_scope_defaults_none(self):
+        args = self.parser.parse_args(["replace", "old", "new"])
+        assert args.since is None
+        assert args.until is None
+        assert args.author is None
+
+    def test_preview_scope_defaults_none(self):
+        args = self.parser.parse_args(["preview", "pat"])
+        assert args.since is None
+        assert args.until is None
+        assert args.author is None
+
+    def test_strip_scope_flags_parsed(self):
+        args = self.parser.parse_args([
+            "strip", "pat",
+            "--since", "2024-01-01",
+            "--until", "2025-01-01",
+            "--author", "alice@example.com",
+        ])
+        assert args.since == "2024-01-01"
+        assert args.until == "2025-01-01"
+        assert args.author == "alice@example.com"
+
+    def test_replace_scope_flags_parsed(self):
+        args = self.parser.parse_args([
+            "replace", "old", "new",
+            "--since", "6 months ago",
+            "--author", "bob",
+        ])
+        assert args.since == "6 months ago"
+        assert args.until is None
+        assert args.author == "bob"
+
+    def test_preview_scope_flags_parsed(self):
+        args = self.parser.parse_args([
+            "preview", "pat",
+            "--since", "yesterday",
+            "--until", "today",
+        ])
+        assert args.since == "yesterday"
+        assert args.until == "today"
+
+    def test_strip_refs_and_scope_coexist(self):
+        args = self.parser.parse_args([
+            "strip", "pat",
+            "--refs", "main",
+            "--since", "2024-01-01",
+        ])
+        assert args.refs == ["main"]
+        assert args.since == "2024-01-01"
+
+    def test_preview_format_default_text(self):
+        args = self.parser.parse_args(["preview", "pat"])
+        assert args.format == "text"
+
+    def test_preview_format_json(self):
+        args = self.parser.parse_args(["preview", "pat", "--format", "json"])
+        assert args.format == "json"
+
+    def test_preview_format_invalid_exits(self):
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["preview", "pat", "--format", "xml"])
+
+    def test_preview_no_color_flag(self):
+        args = self.parser.parse_args(["preview", "pat", "--no-color"])
+        assert args.no_color is True
+
+    def test_strip_preview_flag(self):
+        args = self.parser.parse_args(["strip", "pat", "--preview"])
+        assert args.preview is True
+
+    def test_strip_no_color_flag(self):
+        args = self.parser.parse_args(["strip", "pat", "--no-color"])
+        assert args.no_color is True
+
+    def test_replace_preview_flag(self):
+        args = self.parser.parse_args(["replace", "old", "new", "--preview"])
+        assert args.preview is True
+
+    def test_replace_no_color_flag(self):
+        args = self.parser.parse_args(["replace", "old", "new", "--no-color"])
+        assert args.no_color is True
+
+
+# ---------------------------------------------------------------------------
+# _scope_args
+# ---------------------------------------------------------------------------
+
+class TestScopeArgs:
+    def _make_args(self, since=None, until=None, author=None):
+        parser = build_parser()
+        cmd = ["strip", "pat"]
+        if since is not None:
+            cmd += ["--since", since]
+        if until is not None:
+            cmd += ["--until", until]
+        if author is not None:
+            cmd += ["--author", author]
+        return parser.parse_args(cmd)
+
+    def test_all_none_returns_empty(self):
+        args = self._make_args()
+        assert _scope_args(args) == []
+
+    def test_since_only(self):
+        args = self._make_args(since="2024-01-01")
+        assert _scope_args(args) == ["--since", "2024-01-01"]
+
+    def test_until_only(self):
+        args = self._make_args(until="2025-01-01")
+        assert _scope_args(args) == ["--until", "2025-01-01"]
+
+    def test_author_only(self):
+        args = self._make_args(author="alice")
+        assert _scope_args(args) == ["--author", "alice"]
+
+    def test_all_three(self):
+        args = self._make_args(since="2024-01-01", until="2025-01-01", author="alice")
+        assert _scope_args(args) == [
+            "--since", "2024-01-01",
+            "--until", "2025-01-01",
+            "--author", "alice",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -218,3 +359,311 @@ class TestPreviewIntegration:
         )
         assert result.returncode == 0
         assert "No matching commits found" in result.stdout
+
+    def test_preview_author_filter_matches(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--author", "Test"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "2 commit(s) shown" in result.stdout
+
+    def test_preview_author_filter_no_matches(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--author", "nobody-xyz"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "No matching commits found" in result.stdout
+
+    def test_preview_since_future_no_matches(self, fixture_repo):
+        # All fixture commits are dated 2024-01-01; since 2025 yields nothing.
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--since", "2025-01-01"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "No matching commits found" in result.stdout
+
+    def test_preview_until_past_no_matches(self, fixture_repo):
+        # All fixture commits are dated 2024-01-01; until 2023 yields nothing.
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--until", "2023-12-31"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "No matching commits found" in result.stdout
+
+    def test_preview_scope_shown_in_header(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--since", "2024-01-01", "--author", "Test"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "since   : 2024-01-01" in result.stdout
+        assert "author  : Test" in result.stdout
+
+
+class TestPreviewFormatJson:
+    def test_json_valid_ndjson(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By: Claude",
+             "--format", "json"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+        assert len(lines) == 2
+        for line in lines:
+            obj = json.loads(line)
+            assert "sha" in obj
+            assert "subject" in obj
+            assert "matched_lines" in obj
+            assert len(obj["sha"]) == 12
+            assert any("Co-Authored-By: Claude" in ml for ml in obj["matched_lines"])
+
+    def test_json_no_header_text(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--format", "json"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        for line in result.stdout.splitlines():
+            if line.strip():
+                json.loads(line)  # raises if not valid JSON
+
+    def test_json_no_matches_empty_stdout(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "no-such-pattern-xyz",
+             "--format", "json"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_json_limit_applies(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By",
+             "--format", "json", "--limit", "1"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+        assert len(lines) == 1
+
+    def test_format_text_unchanged(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preview", "Co-Authored-By: Claude",
+             "--format", "text"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "2 commit(s) shown" in result.stdout
+
+
+class TestCompletions:
+    def test_refs_completer_returns_branches(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args[0], 0, stdout="main\nfeature/x\norigin/main\n", stderr=""
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == ["main", "feature/x", "origin/main"]
+
+    def test_refs_completer_nonzero_exit_returns_empty(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="fatal")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == []
+
+    def test_refs_completer_oserror_returns_empty(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            raise OSError("git not found")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == []
+
+    def _refs_action(self, parser):
+        for action in parser._actions:
+            if "--refs" in action.option_strings:
+                return action
+        return None
+
+    def test_strip_refs_has_completer(self):
+        parser = build_parser()
+        strip_parser = parser._subparsers._group_actions[0].choices["strip"]
+        action = self._refs_action(strip_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_replace_refs_has_completer(self):
+        parser = build_parser()
+        replace_parser = parser._subparsers._group_actions[0].choices["replace"]
+        action = self._refs_action(replace_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_run_refs_has_completer(self):
+        parser = build_parser()
+        run_parser = parser._subparsers._group_actions[0].choices["run"]
+        action = self._refs_action(run_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_preview_refs_has_completer(self):
+        parser = build_parser()
+        preview_parser = parser._subparsers._group_actions[0].choices["preview"]
+        action = self._refs_action(preview_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_cli_module_imports_without_argcomplete(self):
+        # main()'s argcomplete import is local/lazy, so importing the module
+        # must succeed regardless of whether argcomplete is installed.
+        import importlib
+
+        import git_rewrite.cli
+
+        importlib.reload(git_rewrite.cli)
+
+
+class TestStripPreview:
+    def test_strip_preview_shows_removed_lines(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Co-Authored-By: Claude" in result.stdout
+        assert "- " in result.stdout
+
+    def test_strip_preview_makes_no_changes(self, fixture_repo):
+        before = subprocess.run(
+            ["git", "log", "--format=%H %s"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        ).stdout
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        after = subprocess.run(
+            ["git", "log", "--format=%H %s"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert before == after
+
+    def test_strip_preview_no_color_flag(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview", "--no-color"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "\x1b[" not in result.stdout
+
+    def test_strip_preview_no_color_env(self, fixture_repo):
+        env = dict(os.environ)
+        env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0
+        assert "\x1b[" not in result.stdout
+
+    def test_strip_preview_shows_count(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--preview", "--no-color"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "2 commit(s) would be modified" in result.stdout
+
+
+class TestStripInvert:
+    def test_invert_strips_non_trailer_lines(self, fixture_repo):
+        # Summary is printed before the rewrite backend runs, so this is a
+        # valid check even in environments without git-filter-repo installed.
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By",
+             "--invert", "--dry-run", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert "invert  : yes" in result.stdout
+        # Every commit's subject line fails to match "Co-Authored-By", so under
+        # --invert all 3 commits would have at least one line stripped.
+        assert "3 / 3 commits" in result.stdout
+
+    def test_invert_preview_shows_inverted_diff(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--invert", "--preview", "--no-color"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        # Non-matching lines (e.g. the subject) are removed under --invert.
+        assert "- Add feature" in result.stdout or "- Fix bug" in result.stdout
+        # The matching trailer line is kept, so it shouldn't show as added.
+        assert "+ Co-Authored-By: Claude" not in result.stdout
+
+    def test_invert_summary_without_invert_flag(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By",
+             "--dry-run", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert "invert" not in result.stdout

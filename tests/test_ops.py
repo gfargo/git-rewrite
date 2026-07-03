@@ -2,13 +2,12 @@
 
 import re
 import sys
-import textwrap
 import tempfile
+import textwrap
 
 import pytest
 
 from git_rewrite import ops
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,6 +100,33 @@ class TestStrip:
         c = FakeCommit(message=b"")
         run_callback(code, c)
         assert c.message == b""
+
+    def test_invert_keeps_only_matching_lines_message(self):
+        code = ops.strip("^Co-Authored-By", flags=0, field="message", invert=True)
+        c = FakeCommit(message=b"Subject\nfreeform body text\nCo-Authored-By: Claude\n")
+        run_callback(code, c)
+        assert b"Co-Authored-By: Claude" in c.message
+        assert b"Subject" not in c.message
+        assert b"freeform body text" not in c.message
+
+    def test_invert_zeros_field_on_no_match(self):
+        code = ops.strip("keep@example\\.com", flags=0, field="author-email", invert=True)
+        c = FakeCommit(author_email=b"other@example.com")
+        run_callback(code, c)
+        assert c.author_email == b""
+
+    def test_invert_leaves_field_on_match(self):
+        code = ops.strip("keep@example\\.com", flags=0, field="author-email", invert=True)
+        c = FakeCommit(author_email=b"keep@example.com")
+        run_callback(code, c)
+        assert c.author_email == b"keep@example.com"
+
+    def test_invert_default_is_false(self):
+        code = ops.strip("remove-me", flags=0, field="message")
+        c = FakeCommit(message=b"keep this\nremove-me\n")
+        run_callback(code, c)
+        assert b"remove-me" not in c.message
+        assert b"keep this" in c.message
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +225,81 @@ class TestFromFile:
         c = FakeCommit(message=b"original")
         run_callback(code, c)
         assert c.message == b"hello"
+
+
+# ---------------------------------------------------------------------------
+# ops.apply_strip_message
+# ---------------------------------------------------------------------------
+
+class TestApplyStripMessage:
+    def test_removes_matching_line(self):
+        pat = re.compile("Co-Authored-By", re.IGNORECASE)
+        msg = "Fix bug\n\nCo-Authored-By: Claude\n"
+        result = ops.apply_strip_message(msg, pat)
+        assert "Co-Authored-By" not in result
+        assert "Fix bug" in result
+
+    def test_preserves_non_matching_lines(self):
+        pat = re.compile("remove-me")
+        msg = "keep this\nremove-me\nalso keep\n"
+        result = ops.apply_strip_message(msg, pat)
+        assert "keep this" in result
+        assert "also keep" in result
+        assert "remove-me" not in result
+
+    def test_cleans_trailing_blank_lines(self):
+        pat = re.compile("trailer")
+        msg = "Subject\n\ntrailer: value\n\n\n"
+        result = ops.apply_strip_message(msg, pat)
+        assert not result.endswith("\n\n")
+        assert result.endswith("\n")
+
+    def test_noop_on_empty_message(self):
+        pat = re.compile("anything")
+        assert ops.apply_strip_message("", pat) == ""
+
+    def test_case_insensitive(self):
+        pat = re.compile("co-authored-by", re.IGNORECASE)
+        msg = "Subject\nCo-Authored-By: Someone\n"
+        result = ops.apply_strip_message(msg, pat)
+        assert "Co-Authored-By" not in result
+
+    def test_invert_keeps_only_matching_lines(self):
+        pat = re.compile("^Co-Authored-By")
+        msg = "Subject\nfreeform body text\nCo-Authored-By: Claude\n"
+        result = ops.apply_strip_message(msg, pat, invert=True)
+        assert "Co-Authored-By: Claude" in result
+        assert "Subject" not in result
+        assert "freeform body text" not in result
+
+    def test_invert_noop_on_empty_message(self):
+        pat = re.compile("anything")
+        assert ops.apply_strip_message("", pat, invert=True) == ""
+
+
+# ---------------------------------------------------------------------------
+# ops.apply_replace_message
+# ---------------------------------------------------------------------------
+
+class TestApplyReplaceMessage:
+    def test_substitutes_in_message(self):
+        pat = re.compile("Claude Sonnet", re.IGNORECASE)
+        msg = "Co-Authored-By: Claude Sonnet\n"
+        result = ops.apply_replace_message(msg, pat, "AI")
+        assert "AI" in result
+        assert "Claude Sonnet" not in result
+
+    def test_back_reference(self):
+        pat = re.compile(r"(\w+)@old\.com")
+        msg = "Contact: user@old.com\n"
+        result = ops.apply_replace_message(msg, pat, r"\1@new.com")
+        assert "user@new.com" in result
+
+    def test_noop_when_no_match(self):
+        pat = re.compile("not-there")
+        msg = "unchanged\n"
+        result = ops.apply_replace_message(msg, pat, "replacement")
+        assert result == "unchanged\n"
 
 
 # ---------------------------------------------------------------------------

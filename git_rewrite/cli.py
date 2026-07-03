@@ -9,6 +9,9 @@ Subcommands:
 """
 
 import argparse
+import difflib
+import json
+import os
 import re
 import subprocess
 import sys
@@ -19,6 +22,10 @@ from .__init__ import __version__
 # Fields available for strip/replace
 FIELDS = list(ops.FIELD_ATTR.keys())
 DEFAULT_FIELD = "message"
+
+_ANSI_RED = "\x1b[31m"
+_ANSI_GREEN = "\x1b[32m"
+_ANSI_RESET = "\x1b[0m"
 
 
 # ---------------------------------------------------------------------------
@@ -38,14 +45,20 @@ def _re_flags(case_sensitive: bool) -> int:
     return 0 if case_sensitive else re.IGNORECASE
 
 
-def _count_matching_commits(pattern: re.Pattern, field: str, refs: list[str]) -> tuple[int, list[tuple[str, str]]]:
+def _count_matching_commits(
+    pattern: re.Pattern,
+    field: str,
+    refs: list[str],
+    scope: list[str] = [],
+    invert: bool = False,
+) -> tuple[int, list[tuple[str, str, str]]]:
     """
     Return (total_commits, matching_commits) where each matching entry is
-    (sha12, subject).
+    (sha12, subject, body).
     """
     ref_args = refs if refs else ["--all"]
     result = subprocess.run(
-        ["git", "log", *ref_args, "--format=%H%n%B%x00"],
+        ["git", "log", *ref_args, *scope, "--format=%H%n%B%x00"],
         capture_output=True,
         text=True,
     )
@@ -70,16 +83,25 @@ def _count_matching_commits(pattern: re.Pattern, field: str, refs: list[str]) ->
         total += 1
 
         if field == "message":
-            target = body
+            if invert:
+                # Under --invert, a commit is "matching" (i.e. would be modified)
+                # if at least one line does NOT match the pattern and would be
+                # stripped. Checked per-line to mirror ops.strip()'s behavior.
+                found = any(not pattern.search(ln) for ln in body.splitlines())
+            else:
+                found = bool(pattern.search(body))
         else:
             # For non-message fields we can't easily inspect via git log text output;
             # count as "unknown" — full rewrite will still filter correctly.
             # Use git log pretty format for author/committer info.
             target = _get_field_value(sha, field)
+            found = bool(pattern.search(target))
+            if invert:
+                found = not found
 
-        if pattern.search(target):
+        if found:
             subject = body.splitlines()[0] if body.strip() else "(empty message)"
-            matching.append((sha[:12], subject))
+            matching.append((sha[:12], subject, body))
 
     return total, matching
 
@@ -120,6 +142,10 @@ def _print_summary(
     refs: list[str],
     matching_count: int,
     total_count: int,
+    since: str | None = None,
+    until: str | None = None,
+    author: str | None = None,
+    invert: bool = False,
 ) -> None:
     print()
     print(f"  action  : {action}")
@@ -129,6 +155,14 @@ def _print_summary(
     print(f"  field   : {field}")
     print(f"  case    : {'sensitive' if case_sensitive else 'insensitive'}")
     print(f"  refs    : {', '.join(refs) if refs else 'all'}")
+    if since is not None:
+        print(f"  since   : {since}")
+    if until is not None:
+        print(f"  until   : {until}")
+    if author is not None:
+        print(f"  author  : {author}")
+    if invert:
+        print("  invert  : yes")
     print(f"  matches : {matching_count} / {total_count} commits")
     print()
 
@@ -161,6 +195,21 @@ def _force_push_reminder(refs: list[str]) -> None:
     print()
 
 
+def _refs_completer(prefix, parsed_args, **kwargs) -> list[str]:
+    """argcomplete completer for --refs: branch names from the current repo."""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "-a", "--format=%(refname:short)"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run",
@@ -172,13 +221,14 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip confirmation prompt.",
     )
-    parser.add_argument(
+    refs_action = parser.add_argument(
         "--refs",
         metavar="REF",
         nargs="+",
         default=[],
         help="Limit rewrite to specific refs (default: all refs).",
     )
+    refs_action.completer = _refs_completer
 
 
 def _add_field_flag(parser: argparse.ArgumentParser) -> None:
@@ -203,6 +253,115 @@ def _add_case_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_scope_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--since",
+        metavar="DATE",
+        default=None,
+        help="Only consider commits more recent than DATE (passed to git log --since).",
+    )
+    parser.add_argument(
+        "--until",
+        metavar="DATE",
+        default=None,
+        help="Only consider commits older than DATE (passed to git log --until).",
+    )
+    parser.add_argument(
+        "--author",
+        metavar="PATTERN",
+        default=None,
+        help="Only consider commits whose author name/email matches PATTERN (passed to git log --author).",
+    )
+
+
+def _scope_args(args: argparse.Namespace) -> list[str]:
+    """Build git-log scope arguments from --since / --until / --author flags."""
+    result = []
+    if getattr(args, "since", None):
+        result += ["--since", args.since]
+    if getattr(args, "until", None):
+        result += ["--until", args.until]
+    if getattr(args, "author", None):
+        result += ["--author", args.author]
+    return result
+
+
+def _use_color(args: argparse.Namespace) -> bool:
+    """Return True unless --no-color is set or the NO_COLOR env var is present."""
+    if getattr(args, "no_color", False):
+        return False
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    return True
+
+
+def _add_color_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output.",
+    )
+
+
+def _collect_preview_matches(
+    entries: list[str], pat: re.Pattern, limit: int
+) -> list[tuple[str, str, list[str]]]:
+    """Return (sha12, subject, matched_lines) tuples for up to `limit` matching commits."""
+    results = []
+    for entry in entries:
+        if len(results) >= limit:
+            break
+        entry = entry.strip()
+        if not entry:
+            continue
+        lines = entry.splitlines()
+        if not lines:
+            continue
+        sha = lines[0].strip()
+        if len(sha) < 40:
+            continue
+        body_lines = lines[1:]
+        matched = [line for line in body_lines if pat.search(line)]
+        if not matched:
+            continue
+        subject = body_lines[0].strip() if body_lines else "(empty)"
+        results.append((sha[:12], subject, matched))
+    return results
+
+
+def _render_diff_preview(
+    matching_commits: list[tuple[str, str, str]],
+    transform_fn,
+    use_color: bool,
+) -> None:
+    """Print diff-style before/after for each matching commit."""
+    def _red(s: str) -> str:
+        return f"{_ANSI_RED}{s}{_ANSI_RESET}" if use_color else s
+
+    def _green(s: str) -> str:
+        return f"{_ANSI_GREEN}{s}{_ANSI_RESET}" if use_color else s
+
+    print()
+    for sha, subject, body in matching_commits:
+        print(f"  {sha}  {subject}")
+        after = transform_fn(body)
+        before_lines = body.splitlines()
+        after_lines = after.splitlines()
+        for line in difflib.ndiff(before_lines, after_lines):
+            if line.startswith("- "):
+                print(_red(f"    {line}"))
+            elif line.startswith("+ "):
+                print(_green(f"    {line}"))
+            # skip unchanged ("  ") and hint ("? ") lines
+        print()
+
+    if not matching_commits:
+        print("  No matching commits found.")
+    else:
+        print(f"  ({len(matching_commits)} commit(s) would be modified — no changes made)")
+    print()
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -212,8 +371,22 @@ def cmd_strip(args: argparse.Namespace) -> None:
     pat = _compile_pattern(args.pattern, args.case_sensitive)
     flags = _re_flags(args.case_sensitive)
     requires_filter_repo = args.field != "message"
+    scope = _scope_args(args)
 
-    total, matching = _count_matching_commits(pat, args.field, args.refs)
+    total, matching = _count_matching_commits(pat, args.field, args.refs, scope, invert=args.invert)
+
+    if args.preview:
+        if args.field != "message":
+            print("Note: --preview diff is only supported for --field message.")
+            print(f"  {len(matching)} commit(s) matched. No changes made.")
+            return
+        _render_diff_preview(
+            matching,
+            lambda body: ops.apply_strip_message(body, pat, invert=args.invert),
+            _use_color(args),
+        )
+        return
+
     _print_summary(
         action="strip",
         pattern=args.pattern,
@@ -222,6 +395,10 @@ def cmd_strip(args: argparse.Namespace) -> None:
         refs=args.refs,
         matching_count=len(matching),
         total_count=total,
+        since=args.since,
+        until=args.until,
+        author=args.author,
+        invert=args.invert,
     )
 
     if not matching:
@@ -232,7 +409,7 @@ def cmd_strip(args: argparse.Namespace) -> None:
         print("Aborted.")
         return
 
-    callback = ops.strip(args.pattern, flags, args.field)
+    callback = ops.strip(args.pattern, flags, args.field, invert=args.invert)
     backends.rewrite(
         callback,
         dry_run=args.dry_run,
@@ -249,8 +426,22 @@ def cmd_replace(args: argparse.Namespace) -> None:
     pat = _compile_pattern(args.pattern, args.case_sensitive)
     flags = _re_flags(args.case_sensitive)
     requires_filter_repo = args.field != "message"
+    scope = _scope_args(args)
 
-    total, matching = _count_matching_commits(pat, args.field, args.refs)
+    total, matching = _count_matching_commits(pat, args.field, args.refs, scope)
+
+    if args.preview:
+        if args.field != "message":
+            print("Note: --preview diff is only supported for --field message.")
+            print(f"  {len(matching)} commit(s) matched. No changes made.")
+            return
+        _render_diff_preview(
+            matching,
+            lambda body: ops.apply_replace_message(body, pat, args.replacement),
+            _use_color(args),
+        )
+        return
+
     _print_summary(
         action="replace",
         pattern=args.pattern,
@@ -260,6 +451,9 @@ def cmd_replace(args: argparse.Namespace) -> None:
         refs=args.refs,
         matching_count=len(matching),
         total_count=total,
+        since=args.since,
+        until=args.until,
+        author=args.author,
     )
 
     if not matching:
@@ -289,7 +483,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     callback = ops.from_file(args.script)
 
     print()
-    print(f"  action  : run custom script")
+    print("  action  : run custom script")
     print(f"  script  : {args.script}")
     print(f"  refs    : {', '.join(args.refs) if args.refs else 'all'}")
     print()
@@ -312,11 +506,11 @@ def cmd_run(args: argparse.Namespace) -> None:
 def cmd_preview(args: argparse.Namespace) -> None:
     backends.check_git_repo()
     pat = _compile_pattern(args.pattern, args.case_sensitive)
+    scope = _scope_args(args)
 
-    # Collect commits with their full messages for preview.
     ref_args = args.refs if args.refs else ["--all"]
     result = subprocess.run(
-        ["git", "log", *ref_args, "--format=%H%n%B%x00"],
+        ["git", "log", *ref_args, *scope, "--format=%H%n%B%x00"],
         capture_output=True,
         text=True,
     )
@@ -324,47 +518,41 @@ def cmd_preview(args: argparse.Namespace) -> None:
         sys.exit("error: git log failed.")
 
     entries = result.stdout.split("\x00")
-    shown = 0
-    limit = args.limit
+    matches = _collect_preview_matches(entries, pat, args.limit)
 
+    if args.format == "json":
+        for sha, subject, matched_lines in matches:
+            print(json.dumps({
+                "sha": sha,
+                "subject": subject,
+                "matched_lines": [ml.rstrip() for ml in matched_lines],
+            }))
+        return
+
+    # text format (default) — byte-identical to original behavior
     print()
     print(f"  pattern : {args.pattern}")
     print(f"  case    : {'sensitive' if args.case_sensitive else 'insensitive'}")
     print(f"  refs    : {', '.join(args.refs) if args.refs else 'all'}")
-    print(f"  limit   : {limit}")
+    if args.since is not None:
+        print(f"  since   : {args.since}")
+    if args.until is not None:
+        print(f"  until   : {args.until}")
+    if args.author is not None:
+        print(f"  author  : {args.author}")
+    print(f"  limit   : {args.limit}")
     print()
 
-    for entry in entries:
-        if shown >= limit:
-            break
-        entry = entry.strip()
-        if not entry:
-            continue
-        lines = entry.splitlines()
-        if not lines:
-            continue
-        sha = lines[0].strip()
-        if len(sha) < 40:
-            continue
-        body_lines = lines[1:]
-        body = "\n".join(body_lines)
-
-        # Find matching lines.
-        matching_lines = [l for l in body_lines if pat.search(l)]
-        if not matching_lines:
-            continue
-
-        subject = body_lines[0].strip() if body_lines else "(empty)"
-        print(f"  {sha[:12]}  {subject}")
-        for ml in matching_lines:
+    for sha, subject, matched_lines in matches:
+        print(f"  {sha}  {subject}")
+        for ml in matched_lines:
             print(f"    >> {ml.rstrip()}")
         print()
-        shown += 1
 
-    if shown == 0:
+    if not matches:
         print("No matching commits found.")
     else:
-        print(f"({shown} commit(s) shown)")
+        print(f"({len(matches)} commit(s) shown)")
     print()
 
 
@@ -399,6 +587,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_field_flag(p_strip)
     _add_case_flag(p_strip)
     _add_common_flags(p_strip)
+    _add_scope_flags(p_strip)
+    p_strip.add_argument(
+        "--invert",
+        action="store_true",
+        help="Keep only lines (or field values) matching PATTERN; strip everything else.",
+    )
+    p_strip.add_argument(
+        "--preview",
+        action="store_true",
+        help="Show a diff-style preview of what would change without rewriting anything.",
+    )
+    _add_color_flag(p_strip)
     p_strip.set_defaults(func=cmd_strip)
 
     # -- replace --------------------------------------------------------------
@@ -415,6 +615,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_field_flag(p_replace)
     _add_case_flag(p_replace)
     _add_common_flags(p_replace)
+    _add_scope_flags(p_replace)
+    p_replace.add_argument(
+        "--preview",
+        action="store_true",
+        help="Show a diff-style preview of what would change without rewriting anything.",
+    )
+    _add_color_flag(p_replace)
     p_replace.set_defaults(func=cmd_replace)
 
     # -- run ------------------------------------------------------------------
@@ -450,13 +657,23 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Maximum number of matching commits to display (default: 20).",
     )
-    p_preview.add_argument(
+    p_preview_refs = p_preview.add_argument(
         "--refs",
         metavar="REF",
         nargs="+",
         default=[],
         help="Limit search to specific refs (default: all refs).",
     )
+    p_preview_refs.completer = _refs_completer
+    p_preview.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        metavar="FORMAT",
+        help="Output format: 'text' (default) or 'json' (NDJSON, one object per match).",
+    )
+    _add_scope_flags(p_preview)
+    _add_color_flag(p_preview)
     p_preview.set_defaults(func=cmd_preview)
 
     return parser
@@ -464,6 +681,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     parser = build_parser()
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
     args = parser.parse_args()
     args.func(args)
 

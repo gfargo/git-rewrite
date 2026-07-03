@@ -9,7 +9,14 @@ import sys
 import pytest
 
 import git_rewrite.config as cfg_mod
-from git_rewrite.cli import _compile_pattern, _re_flags, _scope_args, build_parser, cmd_preset
+from git_rewrite.cli import (
+    _compile_pattern,
+    _re_flags,
+    _refs_completer,
+    _scope_args,
+    build_parser,
+    cmd_preset,
+)
 
 # ---------------------------------------------------------------------------
 # Parser / argument parsing
@@ -27,6 +34,11 @@ class TestParser:
         assert args.dry_run is False
         assert args.yes is False
         assert args.refs == []
+        assert args.invert is False
+
+    def test_strip_invert_flag(self):
+        args = self.parser.parse_args(["strip", "my-pattern", "--invert"])
+        assert args.invert is True
 
     def test_replace_positionals(self):
         args = self.parser.parse_args(["replace", "old", "new"])
@@ -461,6 +473,74 @@ class TestPreviewFormatJson:
         assert "2 commit(s) shown" in result.stdout
 
 
+class TestCompletions:
+    def test_refs_completer_returns_branches(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args[0], 0, stdout="main\nfeature/x\norigin/main\n", stderr=""
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == ["main", "feature/x", "origin/main"]
+
+    def test_refs_completer_nonzero_exit_returns_empty(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="fatal")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == []
+
+    def test_refs_completer_oserror_returns_empty(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            raise OSError("git not found")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == []
+
+    def _refs_action(self, parser):
+        for action in parser._actions:
+            if "--refs" in action.option_strings:
+                return action
+        return None
+
+    def test_strip_refs_has_completer(self):
+        parser = build_parser()
+        strip_parser = parser._subparsers._group_actions[0].choices["strip"]
+        action = self._refs_action(strip_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_replace_refs_has_completer(self):
+        parser = build_parser()
+        replace_parser = parser._subparsers._group_actions[0].choices["replace"]
+        action = self._refs_action(replace_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_run_refs_has_completer(self):
+        parser = build_parser()
+        run_parser = parser._subparsers._group_actions[0].choices["run"]
+        action = self._refs_action(run_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_preview_refs_has_completer(self):
+        parser = build_parser()
+        preview_parser = parser._subparsers._group_actions[0].choices["preview"]
+        action = self._refs_action(preview_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_cli_module_imports_without_argcomplete(self):
+        # main()'s argcomplete import is local/lazy, so importing the module
+        # must succeed regardless of whether argcomplete is installed.
+        import importlib
+
+        import git_rewrite.cli
+
+        importlib.reload(git_rewrite.cli)
+
+
 class TestStripPreview:
     def test_strip_preview_shows_removed_lines(self, fixture_repo):
         result = subprocess.run(
@@ -765,6 +845,51 @@ class TestCmdPreset:
 
         assert captured["ns"].pattern == "old@example.com"
         assert captured["ns"].replacement == "new@example.com"
+
+
+# ---------------------------------------------------------------------------
+# strip --invert flag
+# ---------------------------------------------------------------------------
+
+class TestStripInvert:
+    def test_invert_strips_non_trailer_lines(self, fixture_repo):
+        # Summary is printed before the rewrite backend runs, so this is a
+        # valid check even in environments without git-filter-repo installed.
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By",
+             "--invert", "--dry-run", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert "invert  : yes" in result.stdout
+        # Every commit's subject line fails to match "Co-Authored-By", so under
+        # --invert all 3 commits would have at least one line stripped.
+        assert "3 / 3 commits" in result.stdout
+
+    def test_invert_preview_shows_inverted_diff(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--invert", "--preview", "--no-color"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        # Non-matching lines (e.g. the subject) are removed under --invert.
+        assert "- Add feature" in result.stdout or "- Fix bug" in result.stdout
+        # The matching trailer line is kept, so it shouldn't show as added.
+        assert "+ Co-Authored-By: Claude" not in result.stdout
+
+    def test_invert_summary_without_invert_flag(self, fixture_repo):
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By",
+             "--dry-run", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert "invert" not in result.stdout
 
 
 # ---------------------------------------------------------------------------

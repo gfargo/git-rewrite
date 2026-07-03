@@ -24,6 +24,24 @@ pip install -e /path/to/git-rewrite
 
 This installs the `git-rewrite` console script.
 
+## Shell completions
+
+Tab-completion for subcommands, `--field` choices, and `--refs` (populated from `git branch -a`) via [argcomplete](https://github.com/kislyuk/argcomplete):
+
+```bash
+pip install 'git-rewrite[completions]'
+
+# bash (add to ~/.bashrc)
+eval "$(register-python-argcomplete git-rewrite)"
+
+# zsh (add to ~/.zshrc)
+autoload -U bashcompinit && bashcompinit
+eval "$(register-python-argcomplete git-rewrite)"
+
+# fish (add to ~/.config/fish/config.fish)
+register-python-argcomplete --shell fish git-rewrite | source
+```
+
 ## Usage
 
 ```
@@ -58,6 +76,9 @@ git-rewrite strip "Co-Authored-By: Claude.*<noreply@anthropic\.com>"
 
 # Target a different field (requires git-filter-repo)
 git-rewrite strip --field author-email "old@example\.com"
+
+# Keep only conventional-trailer lines, strip the rest of the body
+git-rewrite strip --invert "^[A-Z][a-z-]+: " --field message
 ```
 
 #### `replace` — substitute a pattern with a replacement
@@ -100,6 +121,7 @@ git-rewrite preset strip-ai --refs main --yes
 | `--field FIELD` | Field to target: `message`, `author-name`, `author-email`, `committer-name`, `committer-email` |
 | `--case-sensitive` | Disable case-insensitive matching |
 | `--preview` | (`strip`/`replace`) Diff-style preview of changes — no history rewritten |
+| `--invert` | (`strip`) Keep only matches; strip everything else |
 | `--format FORMAT` | (`preview`) `text` (default) or `json` (NDJSON, one line per match) |
 | `--no-color` | Disable colored output (also honored via `NO_COLOR` env var) |
 

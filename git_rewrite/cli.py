@@ -50,6 +50,7 @@ def _count_matching_commits(
     field: str,
     refs: list[str],
     scope: list[str] = [],
+    invert: bool = False,
 ) -> tuple[int, list[tuple[str, str, str]]]:
     """
     Return (total_commits, matching_commits) where each matching entry is
@@ -82,14 +83,23 @@ def _count_matching_commits(
         total += 1
 
         if field == "message":
-            target = body
+            if invert:
+                # Under --invert, a commit is "matching" (i.e. would be modified)
+                # if at least one line does NOT match the pattern and would be
+                # stripped. Checked per-line to mirror ops.strip()'s behavior.
+                found = any(not pattern.search(ln) for ln in body.splitlines())
+            else:
+                found = bool(pattern.search(body))
         else:
             # For non-message fields we can't easily inspect via git log text output;
             # count as "unknown" — full rewrite will still filter correctly.
             # Use git log pretty format for author/committer info.
             target = _get_field_value(sha, field)
+            found = bool(pattern.search(target))
+            if invert:
+                found = not found
 
-        if pattern.search(target):
+        if found:
             subject = body.splitlines()[0] if body.strip() else "(empty message)"
             matching.append((sha[:12], subject, body))
 
@@ -126,6 +136,7 @@ def _print_summary(
     since: str | None = None,
     until: str | None = None,
     author: str | None = None,
+    invert: bool = False,
 ) -> None:
     print()
     print(f"  action  : {action}")
@@ -141,6 +152,8 @@ def _print_summary(
         print(f"  until   : {until}")
     if author is not None:
         print(f"  author  : {author}")
+    if invert:
+        print("  invert  : yes")
     print(f"  matches : {matching_count} / {total_count} commits")
     print()
 
@@ -173,6 +186,21 @@ def _force_push_reminder(refs: list[str]) -> None:
     print()
 
 
+def _refs_completer(prefix, parsed_args, **kwargs) -> list[str]:
+    """argcomplete completer for --refs: branch names from the current repo."""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "-a", "--format=%(refname:short)"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run",
@@ -184,13 +212,14 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip confirmation prompt.",
     )
-    parser.add_argument(
+    refs_action = parser.add_argument(
         "--refs",
         metavar="REF",
         nargs="+",
         default=[],
         help="Limit rewrite to specific refs (default: all refs).",
     )
+    refs_action.completer = _refs_completer
 
 
 def _add_field_flag(parser: argparse.ArgumentParser) -> None:
@@ -335,14 +364,18 @@ def cmd_strip(args: argparse.Namespace) -> None:
     requires_filter_repo = args.field != "message"
     scope = _scope_args(args)
 
-    total, matching = _count_matching_commits(pat, args.field, args.refs, scope)
+    total, matching = _count_matching_commits(pat, args.field, args.refs, scope, invert=args.invert)
 
     if args.preview:
         if args.field != "message":
             print("Note: --preview diff is only supported for --field message.")
             print(f"  {len(matching)} commit(s) matched. No changes made.")
             return
-        _render_diff_preview(matching, lambda body: ops.apply_strip_message(body, pat), _use_color(args))
+        _render_diff_preview(
+            matching,
+            lambda body: ops.apply_strip_message(body, pat, invert=args.invert),
+            _use_color(args),
+        )
         return
 
     _print_summary(
@@ -356,6 +389,7 @@ def cmd_strip(args: argparse.Namespace) -> None:
         since=args.since,
         until=args.until,
         author=args.author,
+        invert=args.invert,
     )
 
     if not matching:
@@ -366,7 +400,7 @@ def cmd_strip(args: argparse.Namespace) -> None:
         print("Aborted.")
         return
 
-    callback = ops.strip(args.pattern, flags, args.field)
+    callback = ops.strip(args.pattern, flags, args.field, invert=args.invert)
     backends.rewrite(
         callback,
         dry_run=args.dry_run,
@@ -576,6 +610,7 @@ def cmd_preset(args: argparse.Namespace) -> None:
     ns.yes = bool(getattr(args, "yes", None) or False)
     ns.preview = bool(getattr(args, "preview", None) or False)
     ns.no_color = bool(getattr(args, "no_color", None) or False)
+    ns.invert = bool(getattr(args, "invert", None) or preset.get("invert", False))
 
     # Scope flags: CLI overrides preset.
     ns.since = getattr(args, "since", None) or preset.get("since")
@@ -620,6 +655,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_case_flag(p_strip)
     _add_common_flags(p_strip)
     _add_scope_flags(p_strip)
+    p_strip.add_argument(
+        "--invert",
+        action="store_true",
+        help="Keep only lines (or field values) matching PATTERN; strip everything else.",
+    )
     p_strip.add_argument(
         "--preview",
         action="store_true",
@@ -684,13 +724,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Maximum number of matching commits to display (default: 20).",
     )
-    p_preview.add_argument(
+    p_preview_refs = p_preview.add_argument(
         "--refs",
         metavar="REF",
         nargs="+",
         default=[],
         help="Limit search to specific refs (default: all refs).",
     )
+    p_preview_refs.completer = _refs_completer
     p_preview.add_argument(
         "--format",
         choices=["text", "json"],
@@ -761,6 +802,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     parser = build_parser()
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
     args = parser.parse_args()
 
     # Apply top-level config defaults (default_refs, case_sensitive) so they

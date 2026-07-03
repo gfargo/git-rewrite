@@ -83,6 +83,33 @@ class TestStrip:
         run_callback(code, c)
         assert c.message == b""
 
+    def test_invert_keeps_only_matching_lines_message(self):
+        code = ops.strip("^Co-Authored-By", flags=0, field="message", invert=True)
+        c = FakeCommit(message=b"Subject\nfreeform body text\nCo-Authored-By: Claude\n")
+        run_callback(code, c)
+        assert b"Co-Authored-By: Claude" in c.message
+        assert b"Subject" not in c.message
+        assert b"freeform body text" not in c.message
+
+    def test_invert_zeros_field_on_no_match(self):
+        code = ops.strip("keep@example\\.com", flags=0, field="author-email", invert=True)
+        c = FakeCommit(author_email=b"other@example.com")
+        run_callback(code, c)
+        assert c.author_email == b""
+
+    def test_invert_leaves_field_on_match(self):
+        code = ops.strip("keep@example\\.com", flags=0, field="author-email", invert=True)
+        c = FakeCommit(author_email=b"keep@example.com")
+        run_callback(code, c)
+        assert c.author_email == b"keep@example.com"
+
+    def test_invert_default_is_false(self):
+        code = ops.strip("remove-me", flags=0, field="message")
+        c = FakeCommit(message=b"keep this\nremove-me\n")
+        run_callback(code, c)
+        assert b"remove-me" not in c.message
+        assert b"keep this" in c.message
+
 
 # ---------------------------------------------------------------------------
 # ops.replace
@@ -206,6 +233,18 @@ class TestApplyStripMessage:
         msg = "Subject\nCo-Authored-By: Someone\n"
         result = ops.apply_strip_message(msg, pat)
         assert "Co-Authored-By" not in result
+
+    def test_invert_keeps_only_matching_lines(self):
+        pat = re.compile("^Co-Authored-By")
+        msg = "Subject\nfreeform body text\nCo-Authored-By: Claude\n"
+        result = ops.apply_strip_message(msg, pat, invert=True)
+        assert "Co-Authored-By: Claude" in result
+        assert "Subject" not in result
+        assert "freeform body text" not in result
+
+    def test_invert_noop_on_empty_message(self):
+        pat = re.compile("anything")
+        assert ops.apply_strip_message("", pat, invert=True) == ""
 
 
 # ---------------------------------------------------------------------------

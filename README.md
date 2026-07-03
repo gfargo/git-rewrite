@@ -24,6 +24,24 @@ pip install -e /path/to/git-rewrite
 
 This installs the `git-rewrite` console script.
 
+## Shell completions
+
+Tab-completion for subcommands, `--field` choices, and `--refs` (populated from `git branch -a`) via [argcomplete](https://github.com/kislyuk/argcomplete):
+
+```bash
+pip install 'git-rewrite[completions]'
+
+# bash (add to ~/.bashrc)
+eval "$(register-python-argcomplete git-rewrite)"
+
+# zsh (add to ~/.zshrc)
+autoload -U bashcompinit && bashcompinit
+eval "$(register-python-argcomplete git-rewrite)"
+
+# fish (add to ~/.config/fish/config.fish)
+register-python-argcomplete --shell fish git-rewrite | source
+```
+
 ## Usage
 
 ```

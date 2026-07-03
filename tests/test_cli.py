@@ -7,7 +7,13 @@ import sys
 
 import pytest
 
-from git_rewrite.cli import _compile_pattern, _re_flags, _scope_args, build_parser
+from git_rewrite.cli import (
+    _compile_pattern,
+    _re_flags,
+    _refs_completer,
+    _scope_args,
+    build_parser,
+)
 
 # ---------------------------------------------------------------------------
 # Parser / argument parsing
@@ -462,6 +468,74 @@ class TestPreviewFormatJson:
         )
         assert result.returncode == 0
         assert "2 commit(s) shown" in result.stdout
+
+
+class TestCompletions:
+    def test_refs_completer_returns_branches(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args[0], 0, stdout="main\nfeature/x\norigin/main\n", stderr=""
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == ["main", "feature/x", "origin/main"]
+
+    def test_refs_completer_nonzero_exit_returns_empty(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="fatal")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == []
+
+    def test_refs_completer_oserror_returns_empty(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            raise OSError("git not found")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert _refs_completer("", None) == []
+
+    def _refs_action(self, parser):
+        for action in parser._actions:
+            if "--refs" in action.option_strings:
+                return action
+        return None
+
+    def test_strip_refs_has_completer(self):
+        parser = build_parser()
+        strip_parser = parser._subparsers._group_actions[0].choices["strip"]
+        action = self._refs_action(strip_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_replace_refs_has_completer(self):
+        parser = build_parser()
+        replace_parser = parser._subparsers._group_actions[0].choices["replace"]
+        action = self._refs_action(replace_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_run_refs_has_completer(self):
+        parser = build_parser()
+        run_parser = parser._subparsers._group_actions[0].choices["run"]
+        action = self._refs_action(run_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_preview_refs_has_completer(self):
+        parser = build_parser()
+        preview_parser = parser._subparsers._group_actions[0].choices["preview"]
+        action = self._refs_action(preview_parser)
+        assert hasattr(action, "completer")
+        assert action.completer is _refs_completer
+
+    def test_cli_module_imports_without_argcomplete(self):
+        # main()'s argcomplete import is local/lazy, so importing the module
+        # must succeed regardless of whether argcomplete is installed.
+        import importlib
+
+        import git_rewrite.cli
+
+        importlib.reload(git_rewrite.cli)
 
 
 class TestStripPreview:

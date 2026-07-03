@@ -173,6 +173,21 @@ def _force_push_reminder(refs: list[str]) -> None:
     print()
 
 
+def _refs_completer(prefix, parsed_args, **kwargs) -> list[str]:
+    """argcomplete completer for --refs: branch names from the current repo."""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "-a", "--format=%(refname:short)"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run",
@@ -184,13 +199,14 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip confirmation prompt.",
     )
-    parser.add_argument(
+    refs_action = parser.add_argument(
         "--refs",
         metavar="REF",
         nargs="+",
         default=[],
         help="Limit rewrite to specific refs (default: all refs).",
     )
+    refs_action.completer = _refs_completer
 
 
 def _add_field_flag(parser: argparse.ArgumentParser) -> None:
@@ -609,13 +625,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Maximum number of matching commits to display (default: 20).",
     )
-    p_preview.add_argument(
+    p_preview_refs = p_preview.add_argument(
         "--refs",
         metavar="REF",
         nargs="+",
         default=[],
         help="Limit search to specific refs (default: all refs).",
     )
+    p_preview_refs.completer = _refs_completer
     p_preview.add_argument(
         "--format",
         choices=["text", "json"],
@@ -632,6 +649,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     parser = build_parser()
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
     args = parser.parse_args()
     args.func(args)
 

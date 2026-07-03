@@ -15,6 +15,7 @@ git-rewrite = "git_rewrite.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff"]
+completions = ["argcomplete>=3"]
 
 [tool.setuptools.packages.find]
 where = ["."]

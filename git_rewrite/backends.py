@@ -17,7 +17,6 @@ class RewriteResult(NamedTuple):
     """Outcome of a rewrite() call, used to print post-rewrite recovery info."""
 
     backend_name: str
-    backend_name: str
     pre_rewrite_sha: str | None
 
 

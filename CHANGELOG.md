@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/gfargo/git-rewrite/compare/v0.1.1...v0.1.2) (2026-07-04)
+
+
+### Bug Fixes
+
+* rename PyPI package to git-rewrite-history (name was taken) ([331546b](https://github.com/gfargo/git-rewrite/commit/331546be4bea8464f0afd8d2645cef78f4a9a0f4))
+
 ## [0.1.1](https://github.com/gfargo/git-rewrite/compare/v0.1.0...v0.1.1) (2026-07-04)
 
 

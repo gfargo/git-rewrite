@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 
-from . import backends, ops
+from . import backends, config, ops
 from .__init__ import __version__
 
 # Fields available for strip/replace
@@ -113,10 +113,19 @@ def _get_field_value(sha: str, field: str) -> str:
         "author-email": "%ae",
         "committer-name": "%cn",
         "committer-email": "%ce",
+        "author-date": "%ad",
+        "committer-date": "%cd",
     }
     fmt = fmt_map.get(field, "%B")
+    # --date=raw produces "<unix-timestamp> <tz-offset>" which matches the
+    # bytes format git-filter-repo uses (b"1234567890 +0000").  Only meaningful
+    # for date fields, but harmless for others.
+    is_date_field = field in ("author-date", "committer-date")
+    cmd = ["git", "log", "-1", f"--format={fmt}", sha]
+    if is_date_field:
+        cmd.append("--date=raw")
     result = subprocess.run(
-        ["git", "log", "-1", f"--format={fmt}", sha],
+        cmd,
         capture_output=True,
         text=True,
     )
@@ -581,6 +590,82 @@ def cmd_preview(args: argparse.Namespace) -> None:
     print()
 
 
+def cmd_preset(args: argparse.Namespace) -> None:
+    """Run a named preset from the repo-level config file."""
+    cfg = config.load_config()
+    preset = config.get_preset(cfg, args.name)
+
+    # Validate required keys.
+    command = preset.get("command")
+    if not command:
+        sys.exit(f"error: preset '{args.name}' is missing required key 'command'")
+    if command not in ("strip", "replace"):
+        sys.exit(
+            f"error: preset '{args.name}': unsupported command '{command}'. "
+            "Supported commands: strip, replace"
+        )
+
+    pattern = preset.get("pattern")
+    if not pattern:
+        sys.exit(f"error: preset '{args.name}' is missing required key 'pattern'")
+
+    if command == "replace" and "replacement" not in preset:
+        sys.exit(f"error: preset '{args.name}': command 'replace' requires a 'replacement' key")
+
+    # Build a merged Namespace: preset values → overridden by CLI values.
+    # CLI values are only applied when the caller explicitly passed a flag
+    # (sentinels are None for optional flags).
+    ns = argparse.Namespace()
+
+    # Positional / required fields from preset.
+    ns.pattern = pattern
+    ns.replacement = preset.get("replacement", "")
+
+    # field: CLI overrides preset, preset overrides built-in default.
+    if getattr(args, "field", None) is not None:
+        ns.field = args.field
+    else:
+        ns.field = preset.get("field", DEFAULT_FIELD)
+
+    # case_sensitive: CLI flag (True when passed) beats preset.
+    if getattr(args, "case_sensitive", None):
+        ns.case_sensitive = True
+    elif "case_sensitive" in preset:
+        ns.case_sensitive = bool(preset["case_sensitive"])
+    elif "case_sensitive" in cfg:
+        ns.case_sensitive = bool(cfg["case_sensitive"])
+    else:
+        ns.case_sensitive = False
+
+    # refs: CLI overrides preset, preset overrides top-level config default.
+    cli_refs = getattr(args, "refs", None)
+    if cli_refs:
+        ns.refs = cli_refs
+    elif preset.get("refs"):
+        ns.refs = list(preset["refs"])
+    elif cfg.get("default_refs"):
+        ns.refs = list(cfg["default_refs"])
+    else:
+        ns.refs = []
+
+    # Booleans with sentinel defaults (None means "not passed on CLI").
+    ns.dry_run = bool(getattr(args, "dry_run", None) or False)
+    ns.yes = bool(getattr(args, "yes", None) or False)
+    ns.preview = bool(getattr(args, "preview", None) or False)
+    ns.no_color = bool(getattr(args, "no_color", None) or False)
+    ns.invert = bool(getattr(args, "invert", None) or preset.get("invert", False))
+
+    # Scope flags: CLI overrides preset.
+    ns.since = getattr(args, "since", None) or preset.get("since")
+    ns.until = getattr(args, "until", None) or preset.get("until")
+    ns.author = getattr(args, "author", None) or preset.get("author")
+
+    if command == "strip":
+        cmd_strip(ns)
+    else:
+        cmd_replace(ns)
+
+
 # ---------------------------------------------------------------------------
 # Parser assembly
 # ---------------------------------------------------------------------------
@@ -701,6 +786,60 @@ def build_parser() -> argparse.ArgumentParser:
     _add_color_flag(p_preview)
     p_preview.set_defaults(func=cmd_preview)
 
+    # -- preset ---------------------------------------------------------------
+    p_preset = sub.add_parser(
+        "preset",
+        help="Run a named preset from the repo-level config file.",
+        description=(
+            "Load a preset defined in .git-rewrite.toml (or pyproject.toml "
+            "[tool.git-rewrite]) and run it.  CLI flags override preset values."
+        ),
+    )
+    p_preset.add_argument("name", help="Name of the preset to run.")
+    # Override flags use None sentinels so cmd_preset can tell whether the
+    # caller explicitly passed a value on the CLI vs. relying on the preset.
+    p_preset.add_argument(
+        "--field",
+        choices=FIELDS,
+        default=None,
+        metavar="FIELD",
+        help=f"Override the preset's field. Choices: {', '.join(FIELDS)}.",
+    )
+    p_preset.add_argument(
+        "--case-sensitive",
+        action="store_true",
+        default=False,
+        help="Force case-sensitive matching (overrides preset/config).",
+    )
+    p_preset.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=None,
+        help="Show what would be done without making any changes.",
+    )
+    p_preset.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=None,
+        help="Skip confirmation prompt.",
+    )
+    p_preset.add_argument(
+        "--refs",
+        metavar="REF",
+        nargs="+",
+        default=None,
+        help="Override the preset's refs.",
+    )
+    p_preset.add_argument(
+        "--preview",
+        action="store_true",
+        default=None,
+        help="Show a diff-style preview of what would change without rewriting anything.",
+    )
+    _add_scope_flags(p_preset)
+    _add_color_flag(p_preset)
+    p_preset.set_defaults(func=cmd_preset)
+
     return parser
 
 
@@ -712,6 +851,20 @@ def main() -> None:
     except ImportError:
         pass
     args = parser.parse_args()
+
+    # Apply top-level config defaults (default_refs, case_sensitive) so they
+    # are picked up by strip/replace/preview without requiring --refs or
+    # --case-sensitive each time.  CLI flags still win because argparse stores
+    # the explicitly passed value rather than the default when a flag is given.
+    cfg = config.load_config()
+    if cfg:
+        default_refs = cfg.get("default_refs")
+        if default_refs and not getattr(args, "refs", None):
+            args.refs = list(default_refs)
+
+        if cfg.get("case_sensitive") and not getattr(args, "case_sensitive", False):
+            args.case_sensitive = True
+
     args.func(args)
 
 

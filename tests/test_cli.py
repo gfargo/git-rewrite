@@ -1,5 +1,6 @@
 """Tests for git_rewrite/cli.py — argument parsing and preview logic."""
 
+import argparse
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import pytest
 
 from git_rewrite import backends
+import git_rewrite.config as cfg_mod
 from git_rewrite.cli import (
     _compile_pattern,
     _re_flags,
@@ -15,6 +17,7 @@ from git_rewrite.cli import (
     _scope_args,
     build_parser,
     cmd_strip,
+    cmd_preset,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +83,23 @@ class TestParser:
         with pytest.raises(SystemExit):
             self.parser.parse_args(["strip", "pat", "--field", "not-a-field"])
 
+    def test_strip_with_author_date_field(self):
+        args = self.parser.parse_args(["strip", "pat", "--field", "author-date"])
+        assert args.field == "author-date"
+
+    def test_strip_with_committer_date_field(self):
+        args = self.parser.parse_args(["strip", "pat", "--field", "committer-date"])
+        assert args.field == "committer-date"
+
+    def test_replace_with_author_date_field(self):
+        args = self.parser.parse_args(["replace", r"[-+]\d{4}$", "+0000", "--field", "author-date"])
+        assert args.field == "author-date"
+        assert args.pattern == r"[-+]\d{4}$"
+        assert args.replacement == "+0000"
+
+    def test_replace_with_committer_date_field(self):
+        args = self.parser.parse_args(["replace", r"[-+]\d{4}$", "+0000", "--field", "committer-date"])
+        assert args.field == "committer-date"
     def test_strip_scope_defaults_none(self):
         args = self.parser.parse_args(["strip", "pat"])
         assert args.since is None
@@ -613,6 +633,243 @@ class TestStripPreview:
         assert "2 commit(s) would be modified" in result.stdout
 
 
+# ---------------------------------------------------------------------------
+# Preset subparser parsing
+# ---------------------------------------------------------------------------
+
+class TestPresetParser:
+    def setup_method(self):
+        self.parser = build_parser()
+
+    def test_preset_parses_name(self):
+        args = self.parser.parse_args(["preset", "strip-ai"])
+        assert args.name == "strip-ai"
+
+    def test_preset_defaults_are_sentinel_none(self):
+        args = self.parser.parse_args(["preset", "strip-ai"])
+        # Sentinel defaults allow cmd_preset to distinguish "not passed" from "passed"
+        assert args.field is None
+        assert args.refs is None
+        assert args.dry_run is None or args.dry_run is False
+        assert args.preview is None or args.preview is False
+
+    def test_preset_accepts_field_override(self):
+        args = self.parser.parse_args(["preset", "strip-ai", "--field", "author-email"])
+        assert args.field == "author-email"
+
+    def test_preset_accepts_refs_override(self):
+        args = self.parser.parse_args(["preset", "strip-ai", "--refs", "main", "dev"])
+        assert args.refs == ["main", "dev"]
+
+    def test_preset_accepts_dry_run(self):
+        args = self.parser.parse_args(["preset", "strip-ai", "--dry-run"])
+        assert args.dry_run is True
+
+    def test_preset_accepts_case_sensitive(self):
+        args = self.parser.parse_args(["preset", "strip-ai", "--case-sensitive"])
+        assert args.case_sensitive is True
+
+    def test_preset_accepts_preview(self):
+        args = self.parser.parse_args(["preset", "strip-ai", "--preview"])
+        assert args.preview is True
+
+    def test_preset_accepts_scope_flags(self):
+        args = self.parser.parse_args([
+            "preset", "strip-ai",
+            "--since", "2024-01-01",
+            "--until", "2025-01-01",
+            "--author", "alice",
+        ])
+        assert args.since == "2024-01-01"
+        assert args.until == "2025-01-01"
+        assert args.author == "alice"
+
+
+# ---------------------------------------------------------------------------
+# cmd_preset — unit tests via monkeypatching
+# ---------------------------------------------------------------------------
+
+
+class TestCmdPreset:
+    """Test cmd_preset merges preset values and CLI overrides correctly."""
+
+    def _make_args(self, name="strip-ai", **overrides):
+        """Build a minimal Namespace as the preset subparser would produce."""
+        defaults = {
+            "field": None,
+            "case_sensitive": False,
+            "dry_run": False,
+            "yes": False,
+            "refs": None,
+            "preview": False,
+            "no_color": False,
+            "since": None,
+            "until": None,
+            "author": None,
+        }
+        defaults.update(overrides)
+        ns = argparse.Namespace(name=name, **defaults)
+        return ns
+
+    def _patch_config(self, monkeypatch, config: dict):
+        monkeypatch.setattr(cfg_mod, "load_config", lambda: config)
+
+    def test_unknown_preset_exits(self, monkeypatch):
+        self._patch_config(monkeypatch, {"presets": {"other": {"command": "strip", "pattern": "x"}}})
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_preset(self._make_args("missing"))
+        assert "error:" in str(exc_info.value)
+
+    def test_missing_command_exits(self, monkeypatch):
+        self._patch_config(monkeypatch, {
+            "presets": {"bad": {"pattern": "x"}}
+        })
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_preset(self._make_args("bad"))
+        assert "error:" in str(exc_info.value)
+        assert "command" in str(exc_info.value)
+
+    def test_unsupported_command_exits(self, monkeypatch):
+        self._patch_config(monkeypatch, {
+            "presets": {"bad": {"command": "run", "pattern": "x"}}
+        })
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_preset(self._make_args("bad"))
+        assert "unsupported command" in str(exc_info.value)
+
+    def test_replace_without_replacement_exits(self, monkeypatch):
+        self._patch_config(monkeypatch, {
+            "presets": {"bad": {"command": "replace", "pattern": "x"}}
+        })
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_preset(self._make_args("bad"))
+        assert "replacement" in str(exc_info.value)
+
+    def test_cli_field_overrides_preset(self, monkeypatch):
+        """CLI --field should win over the preset's field value."""
+        captured = {}
+
+        def fake_cmd_strip(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr(cfg_mod, "load_config", lambda: {
+            "presets": {
+                "my-preset": {
+                    "command": "strip",
+                    "pattern": "foo",
+                    "field": "message",
+                }
+            }
+        })
+        import git_rewrite.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "cmd_strip", fake_cmd_strip)
+
+        args = self._make_args("my-preset", field="author-email")
+        cmd_preset(args)
+
+        assert captured["ns"].field == "author-email"
+
+    def test_preset_field_used_when_no_cli_override(self, monkeypatch):
+        """Preset's field should be used when --field not passed (None)."""
+        captured = {}
+
+        def fake_cmd_strip(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr(cfg_mod, "load_config", lambda: {
+            "presets": {
+                "my-preset": {
+                    "command": "strip",
+                    "pattern": "foo",
+                    "field": "author-name",
+                }
+            }
+        })
+        import git_rewrite.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "cmd_strip", fake_cmd_strip)
+
+        args = self._make_args("my-preset", field=None)
+        cmd_preset(args)
+
+        assert captured["ns"].field == "author-name"
+
+    def test_cli_refs_override_preset_refs(self, monkeypatch):
+        """CLI --refs should override preset refs."""
+        captured = {}
+
+        def fake_cmd_strip(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr(cfg_mod, "load_config", lambda: {
+            "presets": {
+                "my-preset": {
+                    "command": "strip",
+                    "pattern": "foo",
+                    "refs": ["develop"],
+                }
+            }
+        })
+        import git_rewrite.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "cmd_strip", fake_cmd_strip)
+
+        args = self._make_args("my-preset", refs=["main"])
+        cmd_preset(args)
+
+        assert captured["ns"].refs == ["main"]
+
+    def test_top_level_default_refs_applied(self, monkeypatch):
+        """Top-level default_refs used when neither CLI nor preset specify refs."""
+        captured = {}
+
+        def fake_cmd_strip(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr(cfg_mod, "load_config", lambda: {
+            "default_refs": ["main", "develop"],
+            "presets": {
+                "my-preset": {
+                    "command": "strip",
+                    "pattern": "foo",
+                }
+            }
+        })
+        import git_rewrite.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "cmd_strip", fake_cmd_strip)
+
+        args = self._make_args("my-preset", refs=None)
+        cmd_preset(args)
+
+        assert captured["ns"].refs == ["main", "develop"]
+
+    def test_dispatches_to_cmd_replace(self, monkeypatch):
+        """Preset with command=replace should dispatch to cmd_replace."""
+        captured = {}
+
+        def fake_cmd_replace(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr(cfg_mod, "load_config", lambda: {
+            "presets": {
+                "fix-email": {
+                    "command": "replace",
+                    "pattern": "old@example.com",
+                    "replacement": "new@example.com",
+                }
+            }
+        })
+        import git_rewrite.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "cmd_replace", fake_cmd_replace)
+
+        cmd_preset(self._make_args("fix-email"))
+
+        assert captured["ns"].pattern == "old@example.com"
+        assert captured["ns"].replacement == "new@example.com"
+
+
+# ---------------------------------------------------------------------------
+# strip --invert flag
+# ---------------------------------------------------------------------------
+
 class TestStripInvert:
     def test_invert_strips_non_trailer_lines(self, fixture_repo):
         # Summary is printed before the rewrite backend runs, so this is a
@@ -744,3 +1001,62 @@ class TestRecoveryOutput:
         assert "Pre-rewrite HEAD" not in out
         assert "History rewritten successfully" not in out
         assert "To undo" not in out
+
+
+# ---------------------------------------------------------------------------
+# Preset end-to-end: strip --dry-run in a temp git repo
+# ---------------------------------------------------------------------------
+
+class TestPresetEndToEnd:
+    def test_preset_strip_dry_run(self, fixture_repo, tmp_path):
+        """preset strip-ai --dry-run should produce the expected summary output."""
+        config_file = fixture_repo / ".git-rewrite.toml"
+        config_file.write_text(
+            "[presets.strip-ai]\n"
+            'command = "strip"\n'
+            'pattern = "Co-Authored-By:.*Claude.*"\n'
+            'field = "message"\n'
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preset", "strip-ai", "--dry-run", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        # The summary line is always printed before any backend call; check it.
+        assert "strip" in result.stdout
+        assert "Co-Authored-By:.*Claude.*" in result.stdout
+        # Matches should be counted (2 of 3 fixture commits have co-authored-by lines)
+        assert "2 / 3" in result.stdout
+
+    def test_preset_missing_config_file_exits(self, fixture_repo):
+        """Running a preset with no config file should exit with a clear error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preset", "nonexistent"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "error:" in result.stderr or "error:" in result.stdout
+
+    def test_preset_unknown_name_exits(self, fixture_repo):
+        """Running an unknown preset name should exit with a clear error."""
+        config_file = fixture_repo / ".git-rewrite.toml"
+        config_file.write_text(
+            "[presets.strip-ai]\n"
+            'command = "strip"\n'
+            'pattern = "Co-Authored-By"\n'
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "preset", "nonexistent"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        output = result.stdout + result.stderr
+        assert "error:" in output
+        assert "strip-ai" in output  # lists available presets

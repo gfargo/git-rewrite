@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/gfargo/git-rewrite/compare/v0.1.2...v0.1.3) (2026-07-04)
+
+
+### Documentation
+
+* reframe Why section to acknowledge prior art positively ([e2c62cd](https://github.com/gfargo/git-rewrite/commit/e2c62cd119c1eb4a1c511038112dace734ae36a6))
+
 ## [0.1.2](https://github.com/gfargo/git-rewrite/compare/v0.1.1...v0.1.2) (2026-07-04)
 
 

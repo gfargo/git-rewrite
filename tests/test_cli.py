@@ -8,16 +8,16 @@ import sys
 
 import pytest
 
-from git_rewrite import backends
 import git_rewrite.config as cfg_mod
+from git_rewrite import backends
 from git_rewrite.cli import (
     _compile_pattern,
     _re_flags,
     _refs_completer,
     _scope_args,
     build_parser,
-    cmd_strip,
     cmd_preset,
+    cmd_strip,
 )
 
 # ---------------------------------------------------------------------------

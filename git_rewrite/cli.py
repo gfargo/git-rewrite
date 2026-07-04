@@ -174,9 +174,43 @@ def _confirm_rewrite(dry_run: bool, yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def _force_push_reminder(refs: list[str]) -> None:
+def _filter_branch_undo_lines(refs: list[str]) -> list[str]:
+    """Build recovery lines pointing at refs/original/ after a filter-branch run."""
+    lines = []
+    if refs:
+        for ref in refs:
+            qualified = ref if ref.startswith("refs/") else f"refs/heads/{ref}"
+            lines.append(
+                f"  To undo (filter-branch): git reset --hard refs/original/{qualified}"
+            )
+    else:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            qualified = f"refs/heads/{result.stdout.strip()}"
+            lines.append(
+                f"  To undo (filter-branch): git reset --hard refs/original/{qualified}"
+            )
+        else:
+            lines.append(
+                "  To undo (filter-branch): git reset --hard "
+                "<ref under refs/original/> (see: git for-each-ref refs/original/)"
+            )
+    return lines
+
+
+def _force_push_reminder(refs: list[str], result: backends.RewriteResult) -> None:
     print()
     print("History rewritten successfully.")
+    if result.pre_rewrite_sha:
+        print(f"  Pre-rewrite HEAD : {result.pre_rewrite_sha}")
+        print(f"  To undo (filter-repo):   git reset --hard {result.pre_rewrite_sha}")
+    if result.backend_name == "git-filter-branch":
+        for line in _filter_branch_undo_lines(refs):
+            print(line)
     print("Remember to force-push the affected refs:")
     if refs:
         for ref in refs:
@@ -401,7 +435,7 @@ def cmd_strip(args: argparse.Namespace) -> None:
         return
 
     callback = ops.strip(args.pattern, flags, args.field, invert=args.invert)
-    backends.rewrite(
+    result = backends.rewrite(
         callback,
         dry_run=args.dry_run,
         refs=args.refs,
@@ -409,7 +443,7 @@ def cmd_strip(args: argparse.Namespace) -> None:
     )
 
     if not args.dry_run:
-        _force_push_reminder(args.refs)
+        _force_push_reminder(args.refs, result)
 
 
 def cmd_replace(args: argparse.Namespace) -> None:
@@ -456,7 +490,7 @@ def cmd_replace(args: argparse.Namespace) -> None:
         return
 
     callback = ops.replace(args.pattern, args.replacement, flags, args.field)
-    backends.rewrite(
+    result = backends.rewrite(
         callback,
         dry_run=args.dry_run,
         refs=args.refs,
@@ -464,7 +498,7 @@ def cmd_replace(args: argparse.Namespace) -> None:
     )
 
     if not args.dry_run:
-        _force_push_reminder(args.refs)
+        _force_push_reminder(args.refs, result)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -483,7 +517,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         print("Aborted.")
         return
 
-    backends.rewrite(
+    result = backends.rewrite(
         callback,
         dry_run=args.dry_run,
         refs=args.refs,
@@ -491,7 +525,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     )
 
     if not args.dry_run:
-        _force_push_reminder(args.refs)
+        _force_push_reminder(args.refs, result)
 
 
 def cmd_preview(args: argparse.Namespace) -> None:

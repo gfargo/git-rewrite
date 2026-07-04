@@ -9,6 +9,9 @@ description = "Bulk-rewrite any part of git commit history: messages, authors, e
 requires-python = ">=3.10"
 readme = "README.md"
 license = { text = "MIT" }
+dependencies = [
+    "tomli>=1.2.0; python_version < '3.11'",
+]
 
 [project.scripts]
 git-rewrite = "git_rewrite.cli:main"

@@ -107,6 +107,19 @@ git-rewrite run my_callback.py --dry-run
 git-rewrite run my_callback.py --refs main feature/branch
 ```
 
+#### `preset` — run a named preset from the repo config
+
+```bash
+# Run the preset as-is
+git-rewrite preset strip-ai
+
+# Dry-run a preset
+git-rewrite preset strip-ai --dry-run
+
+# Override a flag from the CLI (CLI always wins over preset)
+git-rewrite preset strip-ai --refs main --yes
+```
+
 ### Common flags
 
 | Flag | Description |
@@ -161,6 +174,63 @@ def process_commit(commit):
 ```
 
 The tool validates syntax and the presence of `process_commit` before touching history.
+
+## Config file
+
+Store default options and named presets in a per-repository config file so teams can run the same cleanup repeatedly without repeating flags.
+
+### Config locations (checked in order)
+
+1. `.git-rewrite.toml` in the repo root
+2. `[tool.git-rewrite]` section in `pyproject.toml`
+
+### Schema
+
+```toml
+# .git-rewrite.toml
+
+# Top-level defaults — applied to every command unless overridden on the CLI
+default_refs = ["main", "develop"]
+case_sensitive = false
+
+# Named presets — run with: git-rewrite preset <name>
+[presets.strip-ai]
+command = "strip"
+pattern = "Co-Authored-By:.*Claude.*"
+field = "message"
+
+[presets.fix-email]
+command = "replace"
+pattern = "old@example\\.com"
+replacement = "new@example.com"
+field = "author-email"
+```
+
+The same schema works inside `pyproject.toml` under `[tool.git-rewrite]`:
+
+```toml
+[tool.git-rewrite]
+default_refs = ["main"]
+
+[tool.git-rewrite.presets.strip-ai]
+command = "strip"
+pattern = "Co-Authored-By:.*Claude.*"
+```
+
+### Precedence
+
+CLI flag → preset value → top-level config default → built-in default
+
+> **Note on `case_sensitive`:** `--case-sensitive` is a boolean flag with no
+> inverse (`--case-insensitive`). If you set `case_sensitive = true` in the
+> config and need to override it to `false` for a single run, edit the config
+> temporarily or omit the key.
+
+### Config parse errors
+
+A malformed TOML file or an unknown preset name exits immediately with a clear
+error message listing what went wrong and (for unknown presets) the available
+preset names.
 
 ## After rewriting
 

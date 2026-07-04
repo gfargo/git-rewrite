@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "git-rewrite-history"
-version = "0.1.1"
+version = "0.1.2"
 description = "Bulk-rewrite any part of git commit history: messages, authors, emails, dates, and more"
 requires-python = ">=3.10"
 readme = "README.md"

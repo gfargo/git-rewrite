@@ -9,6 +9,7 @@ import sys
 import pytest
 
 import git_rewrite.config as cfg_mod
+from git_rewrite import backends
 from git_rewrite.cli import (
     _compile_pattern,
     _re_flags,
@@ -16,6 +17,7 @@ from git_rewrite.cli import (
     _scope_args,
     build_parser,
     cmd_preset,
+    cmd_strip,
 )
 
 # ---------------------------------------------------------------------------
@@ -907,6 +909,98 @@ class TestStripInvert:
             text=True,
         )
         assert "invert" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Post-rewrite recovery output
+# ---------------------------------------------------------------------------
+
+class TestRecoveryOutput:
+    def test_strip_shows_recovery_info_via_filter_branch(self, fixture_repo):
+        # git-filter-repo is not installed in this environment, so a real
+        # (non-dry-run) rewrite exercises the filter-branch backend.
+        pre_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "strip", "Co-Authored-By: Claude",
+             "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert f"Pre-rewrite HEAD : {pre_sha}" in result.stdout
+        assert f"To undo (filter-repo):   git reset --hard {pre_sha}" in result.stdout
+        assert (
+            "To undo (filter-branch): git reset --hard refs/original/refs/heads/main"
+            in result.stdout
+        )
+
+    def test_replace_shows_recovery_info(self, fixture_repo):
+        pre_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "replace", "Claude", "Bot", "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert f"Pre-rewrite HEAD : {pre_sha}" in result.stdout
+        assert (
+            "To undo (filter-branch): git reset --hard refs/original/refs/heads/main"
+            in result.stdout
+        )
+
+    def test_run_shows_recovery_info(self, fixture_repo, tmp_path):
+        script = tmp_path / "noop.py"
+        script.write_text("def process_commit(commit):\n    pass\n")
+
+        pre_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        result = subprocess.run(
+            [sys.executable, "-m", "git_rewrite", "run", str(script), "--yes"],
+            cwd=fixture_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert f"Pre-rewrite HEAD : {pre_sha}" in result.stdout
+        assert (
+            "To undo (filter-branch): git reset --hard refs/original/refs/heads/main"
+            in result.stdout
+        )
+
+    def test_dry_run_prints_nothing_extra(self, fixture_repo, monkeypatch, capsys):
+        monkeypatch.chdir(fixture_repo)
+        monkeypatch.setattr(backends, "has_filter_repo", lambda: True)
+
+        parser = build_parser()
+        args = parser.parse_args(
+            ["strip", "Co-Authored-By: Claude", "--dry-run", "--yes"]
+        )
+        cmd_strip(args)
+
+        out = capsys.readouterr().out
+        assert "[dry-run] No changes made." in out
+        assert "Pre-rewrite HEAD" not in out
+        assert "History rewritten successfully" not in out
+        assert "To undo" not in out
 
 
 # ---------------------------------------------------------------------------

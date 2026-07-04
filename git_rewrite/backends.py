@@ -8,8 +8,29 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 from . import ops
+
+
+class RewriteResult(NamedTuple):
+    """Outcome of a rewrite() call, used to print post-rewrite recovery info."""
+
+    backend_name: str
+    backend_name: str
+    pre_rewrite_sha: str | None
+
+
+def get_pre_rewrite_head() -> str | None:
+    """Return the current HEAD sha, or None if it can't be determined."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
 
 
 def check_git_repo() -> None:
@@ -94,7 +115,7 @@ def rewrite(
     dry_run: bool,
     refs: list[str],
     requires_filter_repo: bool = False,
-) -> None:
+) -> RewriteResult:
     """
     Execute a history rewrite using the best available backend.
 
@@ -132,8 +153,12 @@ def rewrite(
     if dry_run:
         print(f"  command : {' '.join(cmd[:3])} [callback] ...")
         print("\n[dry-run] No changes made.")
-        return
+        return RewriteResult(backend_name, None)
+
+    pre_rewrite_sha = get_pre_rewrite_head()
 
     result = subprocess.run(cmd)
     if result.returncode != 0:
         sys.exit(f"error: {backend_name} exited with code {result.returncode}.")
+
+    return RewriteResult(backend_name, pre_rewrite_sha)

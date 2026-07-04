@@ -113,10 +113,19 @@ def _get_field_value(sha: str, field: str) -> str:
         "author-email": "%ae",
         "committer-name": "%cn",
         "committer-email": "%ce",
+        "author-date": "%ad",
+        "committer-date": "%cd",
     }
     fmt = fmt_map.get(field, "%B")
+    # --date=raw produces "<unix-timestamp> <tz-offset>" which matches the
+    # bytes format git-filter-repo uses (b"1234567890 +0000").  Only meaningful
+    # for date fields, but harmless for others.
+    is_date_field = field in ("author-date", "committer-date")
+    cmd = ["git", "log", "-1", f"--format={fmt}", sha]
+    if is_date_field:
+        cmd.append("--date=raw")
     result = subprocess.run(
-        ["git", "log", "-1", f"--format={fmt}", sha],
+        cmd,
         capture_output=True,
         text=True,
     )

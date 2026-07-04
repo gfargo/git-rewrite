@@ -78,6 +78,23 @@ class TestParser:
         with pytest.raises(SystemExit):
             self.parser.parse_args(["strip", "pat", "--field", "not-a-field"])
 
+    def test_strip_with_author_date_field(self):
+        args = self.parser.parse_args(["strip", "pat", "--field", "author-date"])
+        assert args.field == "author-date"
+
+    def test_strip_with_committer_date_field(self):
+        args = self.parser.parse_args(["strip", "pat", "--field", "committer-date"])
+        assert args.field == "committer-date"
+
+    def test_replace_with_author_date_field(self):
+        args = self.parser.parse_args(["replace", r"[-+]\d{4}$", "+0000", "--field", "author-date"])
+        assert args.field == "author-date"
+        assert args.pattern == r"[-+]\d{4}$"
+        assert args.replacement == "+0000"
+
+    def test_replace_with_committer_date_field(self):
+        args = self.parser.parse_args(["replace", r"[-+]\d{4}$", "+0000", "--field", "committer-date"])
+        assert args.field == "committer-date"
     def test_strip_scope_defaults_none(self):
         args = self.parser.parse_args(["strip", "pat"])
         assert args.since is None

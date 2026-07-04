@@ -81,6 +81,10 @@ git-rewrite strip --field author-email "old@example\.com"
 git-rewrite strip --invert "^[A-Z][a-z-]+: " --field message
 ```
 
+> **Note:** Using `strip` on a date field (`--field author-date` or `--field committer-date`) zeroes the
+> field to an empty byte string, producing an invalid date. Use `replace` instead to rewrite specific
+> parts of the date value while keeping it valid.
+
 #### `replace` — substitute a pattern with a replacement
 
 ```bash
@@ -89,6 +93,11 @@ git-rewrite replace "Co-Authored-By: Claude Sonnet \d+\.\d+" "Co-Authored-By: AI
 
 git-rewrite replace "Co-Authored-By: Claude Sonnet \d+\.\d+" "Co-Authored-By: AI"
 git-rewrite replace --field author-name "Old Name" "New Name"
+
+# Normalize timezone offsets to UTC (requires git-filter-repo)
+# Date values are in raw format: "<unix-timestamp> <tz-offset>", e.g. "1700000000 -0700"
+git-rewrite replace --field author-date "[-+]\d{4}$" "+0000"
+git-rewrite replace --field committer-date "[-+]\d{4}$" "+0000"
 ```
 
 #### `run` — execute a custom Python callback
@@ -105,7 +114,7 @@ git-rewrite run my_callback.py --refs main feature/branch
 | `--dry-run` | Show what would happen without modifying history |
 | `--yes / -y` | Skip the confirmation prompt |
 | `--refs REF …` | Limit to specific refs (default: all) |
-| `--field FIELD` | Field to target: `message`, `author-name`, `author-email`, `committer-name`, `committer-email` |
+| `--field FIELD` | Field to target: `message`, `author-name`, `author-email`, `committer-name`, `committer-email`, `author-date`, `committer-date` (date fields require git-filter-repo) |
 | `--case-sensitive` | Disable case-insensitive matching |
 | `--preview` | (`strip`/`replace`) Diff-style preview of changes — no history rewritten |
 | `--invert` | (`strip`) Keep only matches; strip everything else |

@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/git-rewrite
+      url: https://pypi.org/p/git-rewrite-history
     permissions:
       id-token: write
 
@@ -83,7 +83,7 @@ jobs:
         id: sha
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          URL="https://files.pythonhosted.org/packages/source/g/git-rewrite/git_rewrite-${VERSION}.tar.gz"
+          URL="https://files.pythonhosted.org/packages/source/g/git-rewrite-history/git_rewrite_history-${VERSION}.tar.gz"
           for i in 1 2 3 4 5; do
             SHA=$(curl -sL "$URL" | shasum -a 256 | cut -d' ' -f1)
             if [ ${#SHA} -eq 64 ]; then break; fi

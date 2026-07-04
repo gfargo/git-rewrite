@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/gfargo/git-rewrite/compare/v0.1.0...v0.1.1) (2026-07-04)
+
+
+### Bug Fixes
+
+* **backends:** remove duplicate field in RewriteResult namedtuple ([b97d264](https://github.com/gfargo/git-rewrite/commit/b97d2641261232cd3af86a89e5d8650475a59bc3))
+
 ## 0.1.0 (2026-07-04)
 
 
